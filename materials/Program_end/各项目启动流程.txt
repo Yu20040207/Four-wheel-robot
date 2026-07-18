@@ -1,0 +1,23 @@
+A.底轮机器人启动流程
+1.服务器启动
+cd D:\EMQX\emqx-5.3.0-windows-amd64\bin
+.\emqx start
+
+2.flask端服务器启动
+打开pycham运行app.py
+
+3.米思奇登录账号可进行远程控制
+网址  https://mixio.mixly.cn/
+账号  1593019617@qq.com
+密码  332211
+
+4.EMQX控制端可查看连接情况(可开可不开)
+网址  http://127.0.0.1:18083/#/dashboard/overview
+账号  admin
+密码  GYloveu3334
+
+B.小智ai烧录流程
+cd D:\ESP_IDF\xiaozhi-esp32-main
+idf.py menuconfig
+idf.py build
+idf.py flash monitor

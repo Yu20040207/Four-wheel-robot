@@ -1,0 +1,212 @@
+# openmv_uart_face_detection.py
+# OpenMV摄像头通过串口向ESP8266发送人脸数据
+import sensor
+import time
+import ustruct
+import json
+from pyb import UART, LED
+
+# 摄像头初始化
+sensor.reset()
+sensor.set_pixformat(sensor.GRAYSCALE)  # 使用灰度图提高性能
+sensor.set_framesize(sensor.QQVGA)      # 160x120，降低分辨率提高速度
+sensor.skip_frames(time=2000)           # 让相机稳定
+sensor.set_auto_gain(False)
+sensor.set_auto_whitebal(False)
+
+# 串口配置 - 连接ESP8266
+uart = UART(3, 115200, timeout_char=1000)  # UART3, 115200波特率
+
+# LED指示灯
+red_led = LED(1)    # 红色LED，用于错误指示
+green_led = LED(2)  # 绿色LED，用于检测指示
+blue_led = LED(3)   # 蓝色LED，用于通信指示
+
+# 人脸检测配置
+FACE_DETECTION_THRESHOLD = 0.6    # 人脸检测阈值
+MIN_FACE_SIZE = (20, 20)          # 最小人脸尺寸
+DETECTION_INTERVAL = 1000         # 检测间隔(ms)
+MAX_FACES = 3                     # 最大检测人脸数
+
+# 状态变量
+last_detection_time = 0
+frame_count = 0
+error_count = 0
+
+def send_face_data(faces):
+    """通过串口发送人脸数据给ESP8266"""
+    global error_count
+    
+    try:
+        # 准备人脸数据
+        face_data = {
+            "type": "face_detection",
+            "count": len(faces),
+            "timestamp": time.ticks_ms(),
+            "faces": []
+        }
+        
+        # 添加每个人脸的信息
+        for i, face in enumerate(faces):
+            x, y, w, h = face
+            face_info = {
+                "id": i,
+                "x": x,
+                "y": y, 
+                "width": w,
+                "height": h,
+                "size": w * h
+            }
+            face_data["faces"].append(face_info)
+        
+        # 将数据转换为JSON字符串
+        json_data = json.dumps(face_data) + "\n"  # 添加换行符作为结束标记
+        
+        # 通过串口发送
+        bytes_sent = uart.write(json_data)
+        
+        if bytes_sent > 0:
+            blue_led.on()  # 通信指示灯
+            print("发送人脸数据:", json_data)
+            return True
+        else:
+            raise Exception("串口发送失败")
+            
+    except Exception as e:
+        error_count += 1
+        red_led.on()  # 错误指示灯
+        print("发送数据错误:", e)
+        return False
+    finally:
+        # 短暂点亮后关闭LED
+        time.sleep(10)
+        blue_led.off()
+        red_led.off()
+
+def detect_faces(img):
+    """检测人脸并返回结果"""
+    global frame_count
+    
+    # 使用OpenMV内置的人脸检测
+    faces = img.find_features(
+        sensor.HAAR_CASCADE_FACE, 
+        threshold=FACE_DETECTION_THRESHOLD,
+        scale_factor=1.2
+    )
+    
+    # 过滤太小的人脸
+    valid_faces = []
+    for face in faces:
+        x, y, w, h = face
+        if w >= MIN_FACE_SIZE[0] and h >= MIN_FACE_SIZE[1]:
+            valid_faces.append(face)
+            
+            # 在图像上绘制人脸框（用于调试）
+            img.draw_rectangle(x, y, w, h, color=255, thickness=2)
+    
+    frame_count += 1
+    
+    # 在图像上显示帧率和人脸数量
+    img.draw_string(5, 5, "F:{} F:{}".format(frame_count, len(valid_faces)), color=255)
+    
+    return valid_faces
+
+def check_uart_command():
+    """检查是否有来自ESP8266的命令"""
+    if uart.any():
+        try:
+            command = uart.readline().decode().strip()
+            print("收到命令:", command)
+            
+            if command == "STATUS":
+                # 回复状态信息
+                status = {
+                    "type": "status",
+                    "frame_count": frame_count,
+                    "error_count": error_count,
+                    "timestamp": time.ticks_ms()
+                }
+                uart.write(json.dumps(status) + "\n")
+                green_led.on()
+                time.sleep(100)
+                green_led.off()
+                
+            elif command == "RESTART":
+                # 重启检测
+                machine.reset()
+                
+        except Exception as e:
+            print("处理命令错误:", e)
+
+def main():
+    global last_detection_time
+    
+    print("OpenMV人脸检测系统启动")
+    print("串口: UART3, 115200bps")
+    print("帧大小: 160x120")
+    
+    # 初始化LED
+    red_led.off()
+    green_led.off()
+    blue_led.off()
+    
+    # 启动指示灯序列
+    for i in range(3):
+        green_led.on()
+        time.sleep(100)
+        green_led.off()
+        time.sleep(100)
+    
+    clock = time.clock()
+    
+    while True:
+        clock.tick()
+        
+        try:
+            # 检查串口命令
+            check_uart_command()
+            
+            # 获取当前时间
+            current_time = time.ticks_ms()
+            
+            # 控制检测频率
+            if time.ticks_diff(current_time, last_detection_time) >= DETECTION_INTERVAL:
+                # 捕获图像
+                img = sensor.snapshot()
+                
+                # 检测人脸
+                faces = detect_faces(img)
+                
+                # 如果有人脸，发送数据
+                if faces:
+                    green_led.on()  # 检测到人脸指示灯
+                    send_face_data(faces)
+                    green_led.off()
+                
+                last_detection_time = current_time
+            
+            # 显示帧率（每10帧显示一次）
+            if frame_count % 10 == 0:
+                fps = clock.fps()
+                print("帧率: {:.2f}FPS".format(fps))
+            
+            # 垃圾回收（防止内存泄漏）
+            if frame_count % 50 == 0:
+                gc.collect()
+                
+        except Exception as e:
+            error_count += 1
+            red_led.on()
+            print("主循环错误:", e)
+            time.sleep(1000)
+            red_led.off()
+            
+            # 如果错误太多，重启
+            if error_count > 10:
+                print("错误过多，重启系统...")
+                machine.reset()
+
+# 启动主程序
+if __name__ == "__main__":
+    main()
+    

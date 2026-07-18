@@ -1,0 +1,851 @@
+# openmv_emqx_stream_fixed_socket_v7.py
+import sensor
+import network
+import time
+import socket
+import struct
+import ujson
+import gc
+import machine
+from pyb import LED
+
+# 配置区域
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+RECOGNITION_RESULT_TOPIC = "openmv_recognition_result"
+RECOGNITION_ACK_TOPIC = "openmv/recognition_ack"
+
+# 视频流配置
+FRAME_SIZE = sensor.QVGA  # 160x120 - 降低分辨率以减少数据量
+FRAME_QUALITY = 60         # 降低质量以减少数据量25
+TARGET_FPS = 15            # 降低帧率以提高稳定性 3
+MAX_FRAME_SIZE = 12000     # 限制最大帧大小(8KB)8000
+MAX_MESSAGE_SIZE = 25000  # 限制最大消息大小(10KB)
+
+# 全局变量
+mqtt_socket = None
+frame_count = 0
+last_recognition_time = 0
+received_messages = []
+message_buffer = bytearray()
+CLIENT_ID = "openmv_camera_001"
+
+# 连接状态
+CONNECT_STATE_NORMAL = 0
+CONNECT_STATE_ERROR = 1
+CONNECT_STATE_RECONNECTING = 2
+CONNECT_STATE_RESETTING = 3  # 新增：重置状态
+connect_state = CONNECT_STATE_NORMAL
+reconnect_attempts = 0
+max_reconnect_attempts = 8  # 增加最大重连次数
+last_reconnect_attempt = 0
+reconnect_delay = 5000
+
+# 系统重置相关
+reset_attempts = 0
+max_reset_attempts = 3
+last_reset_attempt = 0
+reset_delay = 10000  # 10秒重置延迟
+
+# LED状态
+LED_NORMAL = 0
+LED_ERROR = 1
+LED_RECOGNITION = 2
+LED_RECONNECTING = 3
+LED_RESETTING = 4  # 新增：重置状态LED
+current_led_state = LED_NORMAL
+led_blink_state = False
+last_led_change = 0
+led_blink_interval = 500
+recognition_led_start = 0
+
+# 发送统计
+send_errors = 0
+max_send_errors = 5  # 增加最大发送错误次数
+last_successful_send = 0
+consecutive_errors = 0  # 连续错误计数
+max_consecutive_errors = 10  # 最大连续错误次数
+
+def init_camera():
+    """初始化摄像头"""
+    try:
+        sensor.reset()
+        sensor.set_pixformat(sensor.RGB565)
+        sensor.set_framesize(FRAME_SIZE)
+        sensor.skip_frames(20)
+        sensor.set_auto_whitebal(False)
+        sensor.set_auto_gain(False)
+        sensor.set_auto_exposure(False, exposure_us=20000)
+        print("摄像头初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+        return True
+    except Exception as e:
+        print(f"❌ 摄像头初始化失败: {e}")
+        return False
+
+def init_led():
+    """初始化LED"""
+    global red_led, green_led, blue_led
+    try:
+        red_led = LED(1)
+        green_led = LED(2)
+        blue_led = LED(3)
+        red_led.off()
+        green_led.off()
+        blue_led.off()
+        print("LED初始化完成")
+        return True
+    except Exception as e:
+        print(f"❌ LED初始化失败: {e}")
+        return False
+
+def update_led():
+    """更新LED状态"""
+    global current_led_state, led_blink_state, last_led_change, recognition_led_start
+    current_time = time.ticks_ms()
+
+    if current_led_state == LED_RECOGNITION:
+        if recognition_led_start == 0:
+            recognition_led_start = current_time
+            blue_led.on()
+            green_led.off()
+            red_led.off()
+        elif time.ticks_diff(current_time, recognition_led_start) > 300:
+            blue_led.off()
+            recognition_led_start = 0
+            current_led_state = LED_NORMAL
+            last_led_change = current_time
+        return
+
+    if current_led_state == LED_RECONNECTING:
+        if time.ticks_diff(current_time, last_led_change) > 300:
+            led_blink_state = not led_blink_state
+            last_led_change = current_time
+            if led_blink_state:
+                red_led.on()
+                green_led.on()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+        return
+
+    if current_led_state == LED_RESETTING:
+        # 重置状态：快速闪烁红灯
+        if time.ticks_diff(current_time, last_led_change) > 200:
+            led_blink_state = not led_blink_state
+            last_led_change = current_time
+            if led_blink_state:
+                red_led.on()
+                green_led.off()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+        return
+
+    if time.ticks_diff(current_time, last_led_change) > led_blink_interval:
+        led_blink_state = not led_blink_state
+        last_led_change = current_time
+        if current_led_state == LED_NORMAL:
+            if led_blink_state:
+                green_led.on()
+                red_led.off()
+                blue_led.off()
+            else:
+                green_led.off()
+                red_led.off()
+                blue_led.off()
+        elif current_led_state == LED_ERROR:
+            if led_blink_state:
+                red_led.on()
+                green_led.off()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+
+def set_led_state(state):
+    """设置LED状态"""
+    global current_led_state, last_led_change, recognition_led_start
+    if current_led_state == state and state != LED_RECOGNITION:
+        return
+    current_led_state = state
+    last_led_change = time.ticks_ms()
+    recognition_led_start = 0
+    if state == LED_NORMAL:
+        green_led.on()
+        red_led.off()
+        blue_led.off()
+        led_blink_state = True
+    elif state == LED_ERROR:
+        red_led.on()
+        green_led.off()
+        blue_led.off()
+        led_blink_state = True
+    elif state == LED_RECONNECTING:
+        red_led.on()
+        green_led.on()
+        blue_led.off()
+        led_blink_state = True
+    elif state == LED_RESETTING:
+        red_led.on()
+        green_led.off()
+        blue_led.off()
+        led_blink_state = True
+    elif state == LED_RECOGNITION:
+        recognition_led_start = 0
+
+def connect_wifi():
+    """连接WiFi"""
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        wlan.active(True)
+        print("连接WiFi: {}...".format(SSID))
+
+        # 如果已连接，先断开
+        if wlan.isconnected():
+            wlan.disconnect()
+            time.sleep(1)
+
+        wlan.connect(SSID, KEY)
+        timeout = 30
+        while not wlan.isconnected() and timeout > 0:
+            time.sleep_ms(500)
+            timeout -= 1
+            print(".", end="")
+
+        if wlan.isconnected():
+            print("\nWiFi连接成功!")
+            print("IP地址:", wlan.ifconfig()[0])
+            return True
+        else:
+            print("\nWiFi连接失败!")
+            return False
+    except Exception as e:
+        print(f"❌ WiFi连接异常: {e}")
+        return False
+
+def check_wifi_connection():
+    """检查WiFi连接状态"""
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        return wlan.isconnected()
+    except:
+        return False
+
+def subscribe_topic(sock, topic):
+    """订阅主题"""
+    try:
+        packet_id = 1
+        subscribe_payload = bytearray()
+        subscribe_payload.extend(struct.pack(">H", packet_id))
+        subscribe_payload.extend(struct.pack(">H", len(topic)))
+        subscribe_payload.extend(topic.encode())
+        subscribe_payload.append(0)
+        remaining_len = len(subscribe_payload)
+        subscribe_packet = bytearray([0x82, remaining_len]) + subscribe_payload
+        sock.send(subscribe_packet)
+
+        # 设置超时接收SUBACK
+        sock.settimeout(3.0)
+        suback = sock.recv(5)
+        sock.settimeout(None)
+
+        print(f"SUBACK响应: {suback.hex()}")
+        print(f"✅ 成功订阅主题: {topic}")
+        return True
+    except Exception as e:
+        print(f"订阅主题失败: {e}")
+        return False
+
+def connect_mqtt_socket():
+    """使用原始Socket连接MQTT服务器"""
+    global mqtt_socket, connect_state, reconnect_attempts, send_errors, consecutive_errors
+    try:
+        print(f"🔗 连接MQTT Socket: {EMQX_BROKER}:{EMQX_PORT}")
+
+        # 清理旧连接
+        if mqtt_socket:
+            try:
+                mqtt_socket.close()
+            except:
+                pass
+            mqtt_socket = None
+            time.sleep_ms(500)  # 增加延迟确保完全关闭
+
+        addr = socket.getaddrinfo(EMQX_BROKER, EMQX_PORT)[0][-1]
+        sock = socket.socket()
+        sock.settimeout(8.0)  # 增加连接超时时间
+        sock.connect(addr)
+        sock.settimeout(None)
+        print("✅ Socket连接成功")
+
+        protocol_name = "MQTT"
+        protocol_level = 4
+        connect_flags = 0xC2
+        keepalive = 60
+
+        variable_header = bytearray()
+        variable_header.extend(struct.pack(">H", len(protocol_name)))
+        variable_header.extend(protocol_name.encode())
+        variable_header.append(protocol_level)
+        variable_header.append(connect_flags)
+        variable_header.extend(struct.pack(">H", keepalive))
+
+        payload = bytearray()
+        payload.extend(struct.pack(">H", len(CLIENT_ID)))
+        payload.extend(CLIENT_ID.encode())
+        payload.extend(struct.pack(">H", len(EMQX_USERNAME)))
+        payload.extend(EMQX_USERNAME.encode())
+        payload.extend(struct.pack(">H", len(EMQX_PASSWORD)))
+        payload.extend(EMQX_PASSWORD.encode())
+
+        remaining_length = len(variable_header) + len(payload)
+        fixed_header = bytearray([0x10, remaining_length])
+        connect_packet = fixed_header + variable_header + payload
+        sock.send(connect_packet)
+        print("已发送CONNECT报文")
+
+        sock.settimeout(5.0)  # 增加CONNACK接收超时
+        connack = sock.recv(4)
+        sock.settimeout(None)
+        print("CONNACK响应:", connack.hex())
+
+        if connack[0] == 0x20 and connack[3] == 0x00:
+            print("✅ MQTT连接成功")
+            if subscribe_topic(sock, RECOGNITION_RESULT_TOPIC):
+                mqtt_socket = sock
+                connect_state = CONNECT_STATE_NORMAL
+                reconnect_attempts = 0
+                send_errors = 0
+                consecutive_errors = 0  # 重置连续错误计数
+                set_led_state(LED_NORMAL)
+                return True
+            else:
+                print("❌ 订阅主题失败")
+                sock.close()
+                connect_state = CONNECT_STATE_ERROR
+                set_led_state(LED_ERROR)
+                return False
+        else:
+            print("❌ MQTT连接失败")
+            sock.close()
+            connect_state = CONNECT_STATE_ERROR
+            set_led_state(LED_ERROR)
+            return False
+    except Exception as e:
+        print(f"❌ MQTT Socket连接失败: {e}")
+        try:
+            sock.close()
+        except:
+            pass
+        connect_state = CONNECT_STATE_ERROR
+        set_led_state(LED_ERROR)
+        return False
+
+def encode_remaining_length(length):
+    """编码MQTT剩余长度字段"""
+    encoded = bytearray()
+    while True:
+        digit = length % 128
+        length //= 128
+        if length > 0:
+            digit |= 0x80
+        encoded.append(digit)
+        if length == 0:
+            break
+    return encoded
+
+def publish_message_safe(topic, message):
+    """安全地发布消息到MQTT主题 - 增强版本"""
+    global mqtt_socket, connect_state, send_errors, last_successful_send, consecutive_errors
+
+    if not mqtt_socket or connect_state != CONNECT_STATE_NORMAL:
+        print("❌ MQTT Socket未连接或连接异常")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    try:
+        if isinstance(message, str):
+            message_bytes = message.encode('utf-8')
+        else:
+            message_bytes = message
+
+        # 严格检查消息长度
+        if len(message_bytes) > MAX_MESSAGE_SIZE:
+            print(f"❌ 消息过长: {len(message_bytes)} > {MAX_MESSAGE_SIZE} 字节")
+            return False
+
+        fixed_header = bytearray([0x30])
+        variable_header = bytearray()
+        topic_bytes = topic.encode('utf-8')
+        variable_header.extend(struct.pack(">H", len(topic_bytes)))
+        variable_header.extend(topic_bytes)
+        payload = message_bytes
+
+        remaining_length = len(variable_header) + len(payload)
+        encoded_remaining = encode_remaining_length(remaining_length)
+        fixed_header.extend(encoded_remaining)
+        publish_packet = fixed_header + variable_header + payload
+
+        # 检查总包大小
+        total_packet_size = len(publish_packet)
+        if total_packet_size > 65535:
+            print(f"❌ 数据包过大: {total_packet_size} 字节")
+            return False
+
+        # 尝试发送数据，设置超时
+        mqtt_socket.settimeout(3.0)  # 增加发送超时
+        try:
+            bytes_sent = mqtt_socket.send(publish_packet)
+            mqtt_socket.settimeout(None)
+
+            if bytes_sent == len(publish_packet):
+                send_errors = 0  # 重置错误计数
+                consecutive_errors = 0  # 重置连续错误计数
+                last_successful_send = time.ticks_ms()
+                return True
+            else:
+                print(f"❌ 发送不完整: {bytes_sent}/{len(publish_packet)} 字节")
+                send_errors += 1
+                consecutive_errors += 1
+                return False
+        except OSError as e:
+            mqtt_socket.settimeout(None)
+            print(f"❌ 发送失败: {e}")
+            send_errors += 1
+            consecutive_errors += 1
+            # 立即关闭有问题的socket
+            try:
+                mqtt_socket.close()
+            except:
+                pass
+            mqtt_socket = None
+            connect_state = CONNECT_STATE_ERROR
+            return False
+
+    except Exception as e:
+        print(f"发布消息失败: {e}")
+        send_errors += 1
+        consecutive_errors += 1
+        return False
+
+def attempt_reconnect():
+    """尝试重新连接"""
+    global reconnect_attempts, last_reconnect_attempt, connect_state, send_errors
+
+    current_time = time.ticks_ms()
+    if time.ticks_diff(current_time, last_reconnect_attempt) < reconnect_delay:
+        return False
+
+    if reconnect_attempts >= max_reconnect_attempts:
+        print(f"❌ 已达到最大重连次数 ({max_reconnect_attempts})，将尝试系统重置")
+        connect_state = CONNECT_STATE_RESETTING
+        return False
+
+    reconnect_attempts += 1
+    last_reconnect_attempt = current_time
+    print(f"🔄 尝试重新连接 ({reconnect_attempts}/{max_reconnect_attempts})...")
+    set_led_state(LED_RECONNECTING)
+
+    # 先检查WiFi
+    if not check_wifi_connection():
+        print("WiFi连接已断开，尝试重新连接WiFi...")
+        if connect_wifi():
+            print("WiFi重新连接成功")
+        else:
+            print("WiFi重新连接失败")
+            return False
+
+    if connect_mqtt_socket():
+        print("✅ MQTT重新连接成功")
+        return True
+    else:
+        print(f"❌ MQTT重新连接失败 ({reconnect_attempts}/{max_reconnect_attempts})")
+        return False
+
+def attempt_system_reset():
+    """尝试系统重置"""
+    global reset_attempts, last_reset_attempt, connect_state
+
+    current_time = time.ticks_ms()
+    if time.ticks_diff(current_time, last_reset_attempt) < reset_delay:
+        return False
+
+    if reset_attempts >= max_reset_attempts:
+        print(f"❌ 已达到最大重置次数 ({max_reset_attempts})，系统将保持错误状态")
+        set_led_state(LED_ERROR)
+        return False
+
+    reset_attempts += 1
+    last_reset_attempt = current_time
+    print(f"🔄 尝试系统重置 ({reset_attempts}/{max_reset_attempts})...")
+    set_led_state(LED_RESETTING)
+
+    # 执行软重置
+    try:
+        print("执行软重置...")
+        machine.reset()
+    except Exception as e:
+        print(f"❌ 软重置失败: {e}")
+        # 如果软重置失败，尝试硬重置
+        try:
+            print("尝试硬重置...")
+            machine.reset()
+        except:
+            print("❌ 硬重置失败")
+
+    return False
+
+def compress_frame(img):
+    """压缩图像帧，确保大小在限制内"""
+    quality = FRAME_QUALITY
+    max_attempts = 3
+
+    for attempt in range(max_attempts):
+        jpeg_data = img.compress(quality=quality)
+        if not isinstance(jpeg_data, bytes):
+            jpeg_data = bytes(jpeg_data)
+
+        frame_size = len(jpeg_data)
+
+        if frame_size <= MAX_FRAME_SIZE:
+            return jpeg_data, frame_size, quality
+
+        # 帧太大，降低质量
+        quality = max(10, quality - 15)  # 每次降低15%质量，最低10%
+        print(f"⚠️ 帧过大 ({frame_size}字节)，降低质量为{quality}%")
+
+    # 如果仍然太大，返回最后一次压缩结果
+    return jpeg_data, frame_size, quality
+
+def send_frame():
+    """发送一帧图像 - 优化版本"""
+    global frame_count, connect_state, send_errors
+
+    if connect_state != CONNECT_STATE_NORMAL:
+        return False
+
+    try:
+        img = sensor.snapshot()
+
+        # 压缩图像并确保大小在限制内
+        jpeg_data, frame_size, actual_quality = compress_frame(img)
+
+        # 如果帧仍然太大，跳过此帧
+        if frame_size > MAX_FRAME_SIZE:
+            print(f"❌ 帧过大 ({frame_size}字节)，跳过此帧")
+            return False
+
+        message = {
+            "frame_id": frame_count,
+            "timestamp": time.ticks_ms(),
+            "width": img.width(),
+            "height": img.height(),
+            "quality": actual_quality,
+            "size": frame_size,
+            "data": jpeg_data.hex()
+        }
+
+        message_json = ujson.dumps(message)
+
+        # 检查JSON消息大小
+        if len(message_json) > MAX_MESSAGE_SIZE:
+            print(f"❌ JSON消息过大: {len(message_json)} 字节，跳过此帧")
+            return False
+
+        if publish_message_safe(VIDEO_TOPIC, message_json):
+            frame_count += 1
+            if frame_count % 10 == 0:
+                print("📹 已发送 {} 帧, 大小: {} 字节, 质量: {}%".format(
+                    frame_count, frame_size, actual_quality))
+            return True
+        else:
+            print("❌ 发送帧失败")
+            return False
+
+    except Exception as e:
+        print("发送帧失败:", e)
+        send_errors += 1
+        return False
+
+def check_connection_health():
+    """检查连接健康状况"""
+    global send_errors, connect_state, last_successful_send, consecutive_errors
+
+    current_time = time.ticks_ms()
+
+    # 如果连续错误太多，立即触发重连
+    if consecutive_errors >= max_consecutive_errors:
+        print(f"⚠️ 连续错误过多 ({consecutive_errors})，立即触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    # 如果发送错误太多，触发重连
+    if send_errors >= max_send_errors:
+        print(f"⚠️ 发送错误过多 ({send_errors})，触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    # 如果长时间没有成功发送，也触发重连
+    if last_successful_send > 0 and time.ticks_diff(current_time, last_successful_send) > 20000:  # 20秒
+        print("⚠️ 20秒内无成功发送，触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    return True
+
+def check_and_process_messages():
+    """检查并处理接收到的MQTT消息"""
+    global mqtt_socket, message_buffer, received_messages, connect_state
+
+    if not mqtt_socket or connect_state != CONNECT_STATE_NORMAL:
+        return
+
+    try:
+        mqtt_socket.setblocking(False)
+        try:
+            chunk = mqtt_socket.recv(512)  # 减少缓冲区大小
+            if chunk:
+                message_buffer.extend(chunk)
+        except OSError:
+            pass
+
+        while len(message_buffer) >= 2:
+            packet_type = message_buffer[0] & 0xF0
+            if packet_type == 0x30:
+                topic, message = parse_mqtt_publish_safe(message_buffer)
+                if topic and message is not None:
+                    received_messages.append((topic, message))
+                    print(f"📨 收到消息 - 主题: {topic}, 长度: {len(message)}字节")
+                    if topic == RECOGNITION_RESULT_TOPIC:
+                        set_led_state(LED_RECOGNITION)
+                break
+            else:
+                message_buffer = message_buffer[1:]
+
+        process_received_messages()
+
+    except Exception as e:
+        print(f"检查消息时出错: {e}")
+        connect_state = CONNECT_STATE_ERROR
+
+def parse_mqtt_publish_safe(data):
+    """安全地解析MQTT PUBLISH报文"""
+    try:
+        if len(data) < 2:
+            return None, None
+        if (data[0] & 0xF0) != 0x30:
+            return None, None
+
+        multiplier = 1
+        value = 0
+        pos = 1
+
+        while pos < len(data):
+            encoded_byte = data[pos]
+            value += (encoded_byte & 127) * multiplier
+            multiplier *= 128
+            pos += 1
+            if (encoded_byte & 128) == 0:
+                break
+            if multiplier > 128 * 128 * 128:
+                return None, None
+
+        remaining_length = value
+        total_length = pos + remaining_length
+
+        if len(data) < total_length:
+            return None, None
+
+        if len(data) < pos + 2:
+            return None, None
+        topic_length = struct.unpack(">H", data[pos:pos+2])[0]
+
+        if len(data) < pos + 2 + topic_length:
+            return None, None
+
+        topic = data[pos+2:pos+2+topic_length].decode('utf-8')
+        message_start = pos + 2 + topic_length
+        message = data[message_start:total_length]
+
+        global message_buffer
+        message_buffer = message_buffer[total_length:]
+
+        return topic, message
+
+    except Exception as e:
+        print(f"解析MQTT报文错误: {e}")
+        return None, None
+
+def process_received_messages():
+    """处理已接收的消息"""
+    global received_messages, last_recognition_time
+
+    for topic, message in received_messages:
+        try:
+            if isinstance(message, bytes):
+                msg_str = message.decode('utf-8')
+            else:
+                msg_str = message
+
+            print(f"处理消息 - 主题: {topic}, 内容: {msg_str}")
+
+            data = ujson.loads(msg_str)
+
+            if topic == RECOGNITION_RESULT_TOPIC:
+                recognized_names = data.get("recognized_names", [])
+                count = data.get("count", 0)
+
+                if count > 0:
+                    print("\n" + "="*40)
+                    print("🎯 人脸识别结果:")
+                    print("  识别到 {} 个人:".format(count))
+                    for i, name in enumerate(recognized_names):
+                        print("  👤 {}: {}".format(i+1, name))
+                    print("="*40)
+
+                    ack_message = {
+                        "status": "received",
+                        "recognized_names": recognized_names,
+                        "count": count,
+                        "client_timestamp": time.ticks_ms()
+                    }
+                    publish_message_safe(RECOGNITION_ACK_TOPIC, ujson.dumps(ack_message))
+                    print("📨 已发送确认消息")
+
+                    last_recognition_time = time.ticks_ms()
+                else:
+                    print("\n❌ 未识别到任何人脸")
+
+        except Exception as e:
+            print("处理消息失败:", e)
+
+    received_messages = []
+
+def send_status():
+    """发送状态信息"""
+    global frame_count, last_recognition_time, connect_state, send_errors
+
+    if connect_state != CONNECT_STATE_NORMAL:
+        return False
+
+    status_msg = {
+        "frames_sent": frame_count,
+        "memory_free": gc.mem_free(),
+        "status": "streaming",
+        "send_errors": send_errors,
+        "client_id": CLIENT_ID,
+        "resolution": "{}x{}".format(sensor.width(), sensor.height())
+    }
+
+    if publish_message_safe(STATUS_TOPIC, ujson.dumps(status_msg)):
+        print("📊 状态: 帧数={}, 错误={}, 内存={}字节".format(
+            frame_count, send_errors, gc.mem_free()))
+        return True
+    else:
+        print("❌ 发送状态失败")
+        return False
+
+def main():
+    """主函数"""
+    print("=== OpenMV EMQX视频流 (增强版) ===")
+    print(f"客户端ID: {CLIENT_ID}")
+    print(f"帧大小限制: {MAX_FRAME_SIZE}字节")
+    print(f"消息大小限制: {MAX_MESSAGE_SIZE}字节")
+
+    # 初始化硬件
+    if not init_camera():
+        print("❌ 摄像头初始化失败，程序退出")
+        return
+
+    if not init_led():
+        print("⚠️ LED初始化失败，继续运行")
+
+    set_led_state(LED_NORMAL)
+
+    if not connect_wifi():
+        return
+
+    if not connect_mqtt_socket():
+        return
+
+    print("\n🚀 系统就绪! 开始视频流传输...")
+    print("分辨率: {}x{}, FPS: {}, 质量: {}%".format(
+        sensor.width(), sensor.height(), TARGET_FPS, FRAME_QUALITY))
+
+    last_status_time = time.ticks_ms()
+    last_health_check = time.ticks_ms()
+
+    while True:
+        current_time = time.ticks_ms()
+        update_led()
+
+        # 根据连接状态处理不同情况
+        if connect_state == CONNECT_STATE_ERROR:
+            if attempt_reconnect():
+                print("✅ 重连成功，恢复视频流")
+            else:
+                time.sleep_ms(2000)
+        elif connect_state == CONNECT_STATE_RESETTING:
+            if attempt_system_reset():
+                print("✅ 系统重置成功")
+            else:
+                time.sleep_ms(2000)
+        else:
+            # 正常状态下的操作
+            check_and_process_messages()
+            send_frame()
+
+            # 定期发送状态和健康检查
+            if time.ticks_diff(current_time, last_status_time) > 15000:
+                send_status()
+                gc.collect()
+                last_status_time = current_time
+
+            if time.ticks_diff(current_time, last_health_check) > 5000:
+                if not check_connection_health():
+                    print("⚠️ 连接健康状况不佳")
+                last_health_check = current_time
+
+        time.sleep_ms(int(1000 / TARGET_FPS))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序错误:", e)
+        import sys
+        sys.print_exception(e)
+        set_led_state(LED_ERROR)
+        # 发生未捕获异常时，等待一段时间后重置
+        time.sleep(5000)
+        machine.reset()
+    finally:
+        if mqtt_socket:
+            try:
+                mqtt_socket.close()
+                print("已关闭MQTT Socket连接")
+            except:
+                pass
+        if 'red_led' in globals():
+            red_led.off()
+        if 'green_led' in globals():
+            green_led.off()
+        if 'blue_led' in globals():
+            blue_led.off()
+        print("程序结束")
+

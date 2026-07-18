@@ -1,0 +1,201 @@
+# openmv_stable_camera.py
+# 专注于解决画面稳定性问题
+import sensor
+import time
+import json
+from pyb import UART, LED
+import gc
+import machine
+
+# === 稳定的相机初始化 ===
+sensor.reset()
+
+# 关键：使用固定的相机参数，禁用所有自动调整
+sensor.set_auto_gain(False)        # 关闭自动增益
+sensor.set_auto_whitebal(False)    # 关闭自动白平衡  
+sensor.set_auto_exposure(False)    # 关闭自动曝光
+
+# 手动设置稳定的参数（根据环境调整这些值）
+sensor.set_contrast(1)             # 对比度 (0-3)
+sensor.set_brightness(0)           # 亮度 (-3 to 3)
+sensor.set_saturation(0)           # 饱和度 (-3 to 3)
+
+# 固定曝光时间（微秒）- 需要根据环境调整
+# 室内一般 10000-30000，室外 1000-5000
+sensor.set_auto_exposure(False, exposure_us=15000)
+
+# 固定增益（dB）- 根据环境调整
+# 较暗环境用较高值 (0-24)，明亮环境用较低值
+sensor.set_auto_gain(False, gain_db=8)
+
+# 图像格式和尺寸
+sensor.set_pixformat(sensor.GRAYSCALE)
+sensor.set_framesize(sensor.QQVGA)  # 160x120
+
+# 跳过更多帧让相机完全稳定
+print("相机初始化中...")
+sensor.skip_frames(time=2000)  # 等待2秒让参数稳定
+
+# 串口和LED
+uart = UART(3, 9600)
+red = LED(1)
+green = LED(2)
+blue = LED(3)
+
+# 关闭所有LED
+red.off()
+green.off()
+blue.off()
+
+print("=== 稳定相机系统启动 ===")
+print("分辨率: {}x{}".format(sensor.width(), sensor.height()))
+print("曝光: 固定")
+print("增益: 固定")
+print("自动调整: 全部关闭")
+
+def test_camera_stability():
+    """测试相机稳定性"""
+    print("测试相机稳定性...")
+    
+    # 采集几帧检查图像稳定性
+    prev_frame = None
+    stability_count = 0
+    
+    for i in range(10):
+        img = sensor.snapshot()
+        
+        # 计算图像平均亮度作为稳定性指标
+        stats = img.get_statistics()
+        avg_brightness = stats.mean()
+        
+        print("帧 {}: 平均亮度 = {:.1f}".format(i, avg_brightness))
+        
+        if prev_frame is not None:
+            brightness_diff = abs(avg_brightness - prev_frame)
+            if brightness_diff < 5:  # 亮度变化小于5认为稳定
+                stability_count += 1
+        
+        prev_frame = avg_brightness
+        time.sleep_ms(100)
+    
+    stability = (stability_count / 9) * 100
+    print("相机稳定性: {:.1f}%".format(stability))
+    return stability > 80  # 80%以上认为稳定
+
+def adjust_camera_parameters():
+    """根据环境调整相机参数"""
+    print("自动调整相机参数...")
+    
+    # 临时开启自动曝光来检测合适参数
+    sensor.set_auto_exposure(True)
+    sensor.set_auto_gain(True)
+    sensor.skip_frames(time=1000)  # 让自动调整生效
+    
+    # 获取自动调整后的参数
+    auto_exposure = sensor.get_exposure_us()
+    auto_gain = sensor.get_gain_db()
+    
+    print("自动调整结果:")
+    print("  曝光: {}us".format(auto_exposure))
+    print("  增益: {}dB".format(auto_gain))
+    
+    # 关闭自动调整，使用检测到的参数
+    sensor.set_auto_exposure(False, exposure_us=auto_exposure)
+    sensor.set_auto_gain(False, gain_db=auto_gain)
+    
+    return auto_exposure, auto_gain
+
+def simple_face_detect(img):
+    """简化的人脸检测"""
+    try:
+        faces = img.find_features(
+            sensor.HAAR_CASCADE_FACE,
+            threshold=0.5,
+            scale_factor=1.2
+        )
+        return faces if faces else []
+    except Exception as e:
+        print("检测错误:", e)
+        return []
+
+def send_data(faces):
+    """发送数据"""
+    if not faces:
+        return False
+        
+    try:
+        data = {
+            'time': time.ticks_ms(),
+            'faces': len(faces),
+            'stability': 'good'  # 添加稳定性标记
+        }
+        uart.write(json.dumps(data) + '\n')
+        blue.on()
+        time.sleep_ms(10)
+        blue.off()
+        return True
+    except:
+        return False
+
+# 主程序
+print("初始化完成，开始主循环...")
+
+# 测试相机稳定性
+if test_camera_stability():
+    print("相机稳定性测试通过")
+else:
+    print("相机稳定性不佳，尝试自动调整...")
+    exp, gain = adjust_camera_parameters()
+    print("使用调整后的参数: 曝光={}us, 增益={}dB".format(exp, gain))
+
+frame_count = 0
+last_status_time = time.ticks_ms()
+detection_interval = 500  # 降低检测频率提高稳定性
+
+try:
+    while True:
+        # 捕获图像
+        img = sensor.snapshot()
+        frame_count += 1
+        
+        current_time = time.ticks_ms()
+        
+        # 控制检测频率
+        if time.ticks_diff(current_time, last_status_time) > detection_interval:
+            faces = simple_face_detect(img)
+            
+            if faces:
+                green.on()
+                # 绘制人脸框
+                for f in faces:
+                    img.draw_rectangle(f, color=255)
+                send_data(faces)
+                print("检测到{}张人脸".format(len(faces)))
+                green.off()
+            
+            last_status_time = current_time
+        
+        # 显示状态信息（降低频率）
+        if frame_count % 50 == 0:
+            current_time = time.ticks_ms()
+            elapsed = time.ticks_diff(current_time, last_status_time) / 1000
+            fps = frame_count / elapsed if elapsed > 0 else 0
+            
+            print("状态 - 帧率: {:.1f}FPS, 内存: {}字节".format(
+                fps, gc.mem_free()))
+            
+            frame_count = 0
+            last_status_time = current_time
+            
+            # 垃圾回收
+            gc.collect()
+        
+        # 固定延迟确保稳定性
+        time.sleep_ms(20)  # 固定20ms延迟
+        
+except Exception as e:
+    print("错误:", e)
+    red.on()
+    time.sleep_ms(2000)
+    machine.reset()
+    

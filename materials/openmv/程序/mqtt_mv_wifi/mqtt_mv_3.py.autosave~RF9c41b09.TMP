@@ -1,0 +1,233 @@
+# openmv_fixed_receiver.py
+import network
+import time
+import socket
+import struct
+import ujson
+
+SSID = "MTCPC"
+KEY = "mt12345mt"
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+TOPIC = "openmv_recognition_result"
+
+print("=== OpenMV MQTT接收器 (修复版) ===")
+
+# WiFi连接
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+wlan.connect(SSID, KEY)
+
+while not wlan.isconnected():
+    time.sleep(0.1)
+
+print("WiFi连接成功")
+time.sleep(2)
+
+def connect_mqtt():
+    """连接到MQTT服务器"""
+    try:
+        addr = socket.getaddrinfo(EMQX_BROKER, EMQX_PORT)[0][-1]
+        sock = socket.socket()
+        sock.connect(addr)
+        print("✅ Socket连接成功")
+        
+        # 构建MQTT CONNECT报文
+        client_id = "openmv_receiver_001"
+        protocol_name = "MQTT"
+        protocol_level = 4
+        connect_flags = 0xC2
+        keepalive = 60
+        
+        variable_header = bytearray()
+        variable_header.extend(struct.pack(">H", len(protocol_name)))
+        variable_header.extend(protocol_name.encode())
+        variable_header.append(protocol_level)
+        variable_header.append(connect_flags)
+        variable_header.extend(struct.pack(">H", keepalive))
+        
+        payload = bytearray()
+        payload.extend(struct.pack(">H", len(client_id)))
+        payload.extend(client_id.encode())
+        payload.extend(struct.pack(">H", len(EMQX_USERNAME)))
+        payload.extend(EMQX_USERNAME.encode())
+        payload.extend(struct.pack(">H", len(EMQX_PASSWORD)))
+        payload.extend(EMQX_PASSWORD.encode())
+        
+        remaining_length = len(variable_header) + len(payload)
+        fixed_header = bytearray([0x10, remaining_length])
+        
+        connect_packet = fixed_header + variable_header + payload
+        sock.send(connect_packet)
+        
+        # 读取CONNACK
+        connack = sock.recv(4)
+        if connack[0] == 0x20 and connack[3] == 0x00:
+            print("✅ MQTT连接成功")
+            
+            # 订阅主题
+            packet_id = 1
+            subscribe_payload = bytearray()
+            subscribe_payload.extend(struct.pack(">H", packet_id))
+            subscribe_payload.extend(struct.pack(">H", len(TOPIC)))
+            subscribe_payload.extend(TOPIC.encode())
+            subscribe_payload.append(0)
+            
+            remaining_len = len(subscribe_payload)
+            subscribe_packet = bytearray([0x82, remaining_len]) + subscribe_payload
+            sock.send(subscribe_packet)
+            
+            # 读取SUBACK
+            suback = sock.recv(5)  # 增加缓冲区大小
+            print("SUBACK:", suback.hex())
+            print("✅ 订阅成功")
+            
+            return sock
+        else:
+            print("❌ MQTT连接失败")
+            sock.close()
+            return None
+            
+    except Exception as e:
+        print(f"连接失败: {e}")
+        return None
+
+def parse_mqtt_publish(data):
+    """解析MQTT PUBLISH报文"""
+    try:
+        if len(data) < 4:
+            return None, None
+            
+        # 检查是否是PUBLISH报文
+        if (data[0] & 0xF0) != 0x30:
+            return None, None
+            
+        # 解析剩余长度
+        remaining_length = data[1]
+        
+        # 解析主题长度
+        if len(data) < 4:
+            return None, None
+        topic_length = struct.unpack(">H", data[2:4])[0]
+        
+        # 检查数据长度是否足够
+        if len(data) < 4 + topic_length:
+            return None, None
+            
+        # 提取主题
+        topic = data[4:4+topic_length].decode('utf-8')
+        
+        # 提取消息内容
+        message_start = 4 + topic_length
+        if len(data) < message_start:
+            return topic, None
+            
+        message = data[message_start:]
+        
+        return topic, message
+        
+    except Exception as e:
+        print(f"解析MQTT报文错误: {e}")
+        return None, None
+
+def receive_messages(sock):
+    """接收和处理消息"""
+    buffer = bytearray()
+    message_count = 0
+    
+    print("\n🎯 开始监听消息...")
+    
+    while True:
+        try:
+            # 设置为非阻塞模式接收
+            sock.setblocking(False)
+            try:
+                chunk = sock.recv(256)  # 每次接收256字节
+                if chunk:
+                    buffer.extend(chunk)
+                    #print(f"收到数据块: {len(chunk)} 字节")
+            except OSError:
+                # 没有数据，继续循环
+                pass
+            
+            # 处理缓冲区中的数据
+            while len(buffer) >= 2:
+                # 检查报文类型
+                packet_type = buffer[0] & 0xF0
+                
+                if packet_type == 0x30:  # PUBLISH
+                    # 解析剩余长度
+                    remaining_length = buffer[1]
+                    total_length = 2 + remaining_length
+                    
+                    # 检查是否已收到完整报文
+                    if len(buffer) >= total_length:
+                        # 提取完整报文
+                        packet = buffer[:total_length]
+                        buffer = buffer[total_length:]
+                        
+                        # 解析报文
+                        topic, message = parse_mqtt_publish(packet)
+                        
+                        if topic and message:
+                            message_count += 1
+                            print(f"\n📨 收到消息 #{message_count}")
+                            print(f"主题: {topic}")
+                            print(f"消息长度: {len(message)} 字节")
+                            
+                            try:
+                                # 尝试解码为字符串
+                                message_str = message.decode('utf-8')
+                                print(f"消息内容: {message_str}")
+                                
+                                # 尝试解析JSON
+                                data = ujson.loads(message_str)
+                                print("✅ JSON解析成功!")
+                                if "recognized_names" in data:
+                                    print(f"识别到: {data['recognized_names']}")
+                                    print(f"人数: {data['count']}")
+                                    print(f"置信度: {data.get('confidence_scores', [])}")
+                                else:
+                                    print("测试消息:", data)
+                                    
+                            except Exception as e:
+                                print(f"消息处理错误: {e}")
+                                print("原始消息:", message)
+                            
+                            print("-" * 40)
+                    else:
+                        # 报文不完整，等待更多数据
+                        break
+                else:
+                    # 其他类型的报文，跳过
+                    if len(buffer) >= 2:
+                        remaining_length = buffer[1]
+                        total_length = 2 + remaining_length
+                        if len(buffer) >= total_length:
+                            # 跳过这个报文
+                            buffer = buffer[total_length:]
+                        else:
+                            break
+                    else:
+                        break
+            
+            # 短暂延时
+            time.sleep_ms(100)
+            
+            # 显示状态
+            if message_count == 0 and time.ticks_ms() % 5000 < 100:
+                print("等待消息中...")
+                
+        except Exception as e:
+            print(f"接收循环错误: {e}")
+            time.sleep(1)
+
+# 主程序
+sock = connect_mqtt()
+if sock:
+    receive_messages(sock)
+else:
+    print("无法连接到MQTT服务器")
+

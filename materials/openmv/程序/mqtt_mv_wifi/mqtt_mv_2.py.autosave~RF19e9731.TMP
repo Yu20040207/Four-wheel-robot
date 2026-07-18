@@ -1,0 +1,467 @@
+# openmv_emqx_face_recognition.py
+import sensor
+import network
+import time
+from mqtt import MQTTClient
+import ujson
+import gc
+import struct
+
+# 配置区域
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+CONTROL_TOPIC = "openmv/control"
+COMMAND_TOPIC = "openmv/command"
+FACE_RESULT_TOPIC = "openmv/face/result"  # 新增：人脸识别结果主题
+
+# 视频流配置
+FRAME_SIZE = sensor.QVGA
+FRAME_QUALITY = 80
+TARGET_FPS = 35
+MAX_FRAME_SIZE = 10000
+
+# 全局变量
+wlan = None
+mqtt_client = None
+frame_count = 0
+is_streaming = True
+reconnect_count = 0
+MAX_RECONNECT = 5
+last_face_result = None  # 存储最后收到的人脸识别结果
+face_result_time = 0     # 收到人脸结果的时间
+
+class OpenMVCamera:
+    def __init__(self):
+        self.sensor = sensor
+        self.frame_size = FRAME_SIZE
+        self.quality = FRAME_QUALITY
+        self.target_fps = TARGET_FPS
+        self.exposure = 15000
+        
+    def init_camera(self):
+        """初始化摄像头"""
+        try:
+            self.sensor.reset()
+            self.sensor.set_pixformat(sensor.RGB565)
+            self.sensor.set_framesize(self.frame_size)
+            self.sensor.skip_frames(20)
+            self.sensor.set_auto_whitebal(False)
+            self.sensor.set_auto_gain(False)
+            self.sensor.set_auto_exposure(False, exposure_us=self.exposure)
+            print("摄像头初始化完成 - 分辨率: {}x{}".format(
+                self.sensor.width(), self.sensor.height()))
+            return True
+        except Exception as e:
+            print("摄像头初始化失败:", e)
+            return False
+    
+    def adjust_quality_based_on_memory(self):
+        """根据内存情况调整质量"""
+        free_mem = gc.mem_free()
+        if free_mem < 10000:
+            self.quality = max(50, self.quality - 10)
+            print("内存紧张，降低质量至: {}%".format(self.quality))
+        elif free_mem > 30000 and self.quality < 80:
+            self.quality = min(80, self.quality + 5)
+            print("内存充足，提高质量至: {}%".format(self.quality))
+    
+    def capture_frame(self):
+        """捕获并压缩帧"""
+        try:
+            img = self.sensor.snapshot()
+            
+            # 在图像上显示人脸识别结果（如果有）
+            self._draw_face_result(img)
+            
+            jpeg_data = img.compress(quality=self.quality)
+            
+            if not isinstance(jpeg_data, bytes):
+                jpeg_data = bytes(jpeg_data)
+                
+            return jpeg_data
+        except Exception as e:
+            print("帧捕获失败:", e)
+            return None
+    
+    def _draw_face_result(self, img):
+        """在图像上绘制人脸识别结果"""
+        global last_face_result, face_result_time
+        
+        # 只显示最近5秒内的人脸结果
+        if (last_face_result and 
+            time.ticks_diff(time.ticks_ms(), face_result_time) < 5000):
+            
+            try:
+                # 在图像顶部显示识别结果
+                name = last_face_result.get('name', 'Unknown')
+                confidence = last_face_result.get('confidence', 0)
+                status = last_face_result.get('status', '')
+                
+                # 绘制背景矩形
+                img.draw_rectangle(0, 0, img.width(), 20, fill=True, color=(0, 0, 0))
+                
+                # 显示文本
+                result_text = "{} ({:.1f}%)".format(name, confidence * 100)
+                if status:
+                    result_text += " - {}".format(status)
+                
+                img.draw_string(5, 5, result_text, color=(255, 255, 255), scale=1)
+                
+                # 如果识别成功，在图像中央显示绿色矩形框
+                if status == "recognized":
+                    center_x = img.width() // 2
+                    center_y = img.height() // 2
+                    box_size = min(img.width(), img.height()) // 3
+                    img.draw_rectangle(
+                        center_x - box_size//2, 
+                        center_y - box_size//2,
+                        box_size, 
+                        box_size, 
+                        color=(0, 255, 0), 
+                        thickness=3
+                    )
+                    
+            except Exception as e:
+                print("绘制人脸结果失败:", e)
+
+class NetworkManager:
+    def __init__(self, ssid, key):
+        self.ssid = ssid
+        self.key = key
+        self.wlan = network.WLAN(network.STA_IF)
+        
+    def connect_wifi(self):
+        """连接WiFi"""
+        self.wlan.active(True)
+        
+        if self.wlan.isconnected():
+            print("WiFi已连接，IP:", self.wlan.ifconfig()[0])
+            return True
+            
+        print("连接WiFi: {}...".format(self.ssid))
+        
+        if self.wlan.isconnected():
+            self.wlan.disconnect()
+            time.sleep(1)
+            
+        self.wlan.connect(self.ssid, self.key)
+        
+        timeout = 30
+        while not self.wlan.isconnected() and timeout > 0:
+            time.sleep_ms(500)
+            timeout -= 1
+            print(".", end="")
+            
+        if self.wlan.isconnected():
+            print("\nWiFi连接成功!")
+            print("IP地址:", self.wlan.ifconfig()[0])
+            return True
+        else:
+            print("\nWiFi连接失败!")
+            return False
+            
+    def is_connected(self):
+        """检查WiFi连接状态"""
+        return self.wlan.isconnected()
+
+class MQTTManager:
+    def __init__(self, broker, port, username, password):
+        self.broker = broker
+        self.port = port
+        self.username = username
+        self.password = password
+        self.client = None
+        self.client_id = "openmv_camera_{}".format(time.ticks_ms())
+        
+    def connect(self):
+        """连接EMQX服务器"""
+        try:
+            self.client = MQTTClient(
+                self.client_id,
+                self.broker,
+                port=self.port,
+                user=self.username,
+                password=self.password,
+                keepalive=30
+            )
+            
+            # 设置回调函数
+            self.client.set_callback(self._message_callback)
+            
+            self.client.connect()
+            self.client.subscribe(CONTROL_TOPIC)
+            self.client.subscribe(COMMAND_TOPIC)
+            self.client.subscribe(FACE_RESULT_TOPIC)  # 新增：订阅人脸识别结果
+            
+            print("EMQX连接成功! 客户端ID:", self.client_id)
+            print("已订阅主题: {}, {}, {}".format(CONTROL_TOPIC, COMMAND_TOPIC, FACE_RESULT_TOPIC))
+            return True
+            
+        except Exception as e:
+            print("EMQX连接失败:", e)
+            return False
+    
+    def _message_callback(self, topic, msg):
+        """MQTT消息回调"""
+        try:
+            topic_str = topic.decode('utf-8') if isinstance(topic, bytes) else topic
+            msg_str = msg.decode('utf-8') if isinstance(msg, bytes) else msg
+            
+            print("收到消息 - 主题: {}, 内容: {}".format(topic_str, msg_str))
+            
+            if topic_str == CONTROL_TOPIC:
+                self._handle_control_message(msg_str)
+            elif topic_str == COMMAND_TOPIC:
+                self._handle_command_message(msg_str)
+            elif topic_str == FACE_RESULT_TOPIC:  # 新增：处理人脸识别结果
+                self._handle_face_result(msg_str)
+                
+        except Exception as e:
+            print("消息处理错误:", e)
+    
+    def _handle_control_message(self, message):
+        """处理控制消息"""
+        global is_streaming
+        
+        try:
+            cmd = message.lower().strip()
+            if cmd == "start":
+                is_streaming = True
+                print("开始视频流")
+            elif cmd == "stop":
+                is_streaming = False
+                print("停止视频流")
+            elif cmd == "restart":
+                print("重启摄像头")
+                init_camera()
+        except Exception as e:
+            print("控制消息处理错误:", e)
+    
+    def _handle_command_message(self, message):
+        """处理命令消息"""
+        try:
+            cmd_data = ujson.loads(message)
+            command = cmd_data.get("command")
+            
+            if command == "set_quality":
+                new_quality = cmd_data.get("quality")
+                if new_quality and 10 <= new_quality <= 100:
+                    camera.quality = new_quality
+                    print("设置质量: {}%".format(new_quality))
+                    
+            elif command == "set_exposure":
+                new_exposure = cmd_data.get("exposure")
+                if new_exposure and 1000 <= new_exposure <= 50000:
+                    camera.exposure = new_exposure
+                    sensor.set_auto_exposure(False, exposure_us=new_exposure)
+                    print("设置曝光: {}us".format(new_exposure))
+                    
+        except Exception as e:
+            print("命令消息处理错误:", e)
+    
+    def _handle_face_result(self, message):
+        """处理人脸识别结果"""
+        global last_face_result, face_result_time
+        
+        try:
+            face_data = ujson.loads(message)
+            
+            # 打印人脸识别结果
+            name = face_data.get('name', 'Unknown')
+            confidence = face_data.get('confidence', 0)
+            status = face_data.get('status', '')
+            
+            print("=== 人脸识别结果 ===")
+            print("姓名: {}".format(name))
+            print("置信度: {:.2f}%".format(confidence * 100))
+            print("状态: {}".format(status))
+            print("=================")
+            
+            # 存储结果用于在图像上显示
+            last_face_result = face_data
+            face_result_time = time.ticks_ms()
+            
+        except Exception as e:
+            print("人脸结果处理错误:", e)
+    
+    def publish(self, topic, message):
+        """发布消息"""
+        try:
+            if self.client:
+                self.client.publish(topic, message)
+                return True
+        except Exception as e:
+            print("发布消息失败:", e)
+        return False
+    
+    def check_messages(self):
+        """检查新消息"""
+        try:
+            if self.client:
+                self.client.check_msg()
+        except:
+            pass
+
+def send_video_frame(mqtt_mgr, camera):
+    """发送视频帧到EMQX"""
+    global frame_count
+    
+    try:
+        # 检查内存并调整质量
+        camera.adjust_quality_based_on_memory()
+        
+        # 捕获图像
+        jpeg_data = camera.capture_frame()
+        if not jpeg_data:
+            return False
+            
+        frame_size = len(jpeg_data)
+        
+        if frame_size > MAX_FRAME_SIZE:
+            print("帧过大: {} 字节，跳过".format(frame_size))
+            return False
+        
+        # 构建消息 - 使用二进制数据减少传输量
+        timestamp = time.ticks_ms()
+        header = struct.pack('IIII', frame_count, timestamp, frame_size, camera.quality)
+        
+        # 组合头部和图像数据
+        message_data = header + jpeg_data
+        
+        # 发布到EMQX
+        success = mqtt_mgr.publish(VIDEO_TOPIC, message_data)
+        
+        if success:
+            frame_count += 1
+            
+            # 每10帧输出一次状态
+            if frame_count % 10 == 0:
+                print("已发送 {} 帧, 大小: {} 字节, 质量: {}%".format(
+                    frame_count, frame_size, camera.quality))
+        
+        return success
+
+    except Exception as e:
+        print("发送视频帧失败:", e)
+        return False
+
+def send_status(mqtt_mgr):
+    """发送状态信息"""
+    global last_face_result
+    
+    try:
+        status_msg = {
+            "frames_sent": frame_count,
+            "memory_free": gc.mem_free(),
+            "memory_alloc": gc.mem_alloc(),
+            "status": "streaming" if is_streaming else "stopped",
+            "timestamp": time.ticks_ms(),
+            "last_face_result": last_face_result  # 包含最后的人脸识别结果
+        }
+        mqtt_mgr.publish(STATUS_TOPIC, ujson.dumps(status_msg))
+    except Exception as e:
+        print("发送状态失败:", e)
+
+def stream_video(mqtt_mgr, camera, network_mgr):
+    """视频流主循环"""
+    global reconnect_count
+    
+    print("开始视频流传输...")
+    print("目标FPS: {}, 质量: {}%".format(camera.target_fps, camera.quality))
+
+    last_status_time = time.ticks_ms()
+    last_reconnect_check = time.ticks_ms()
+
+    while True:
+        try:
+            # 定期检查网络连接
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_reconnect_check) > 5000:
+                if not network_mgr.is_connected():
+                    print("网络断开，尝试重连...")
+                    if network_mgr.connect_wifi() and mqtt_mgr.connect():
+                        reconnect_count = 0
+                        print("重连成功")
+                    else:
+                        reconnect_count += 1
+                        if reconnect_count >= MAX_RECONNECT:
+                            print("达到最大重连次数，重启系统...")
+                            time.sleep(5000)
+                            machine.reset()
+                last_reconnect_check = current_time
+            
+            # 检查MQTT消息
+            mqtt_mgr.check_messages()
+            
+            if not is_streaming:
+                time.sleep_ms(100)
+                continue
+
+            # 发送视频帧
+            success = send_video_frame(mqtt_mgr, camera)
+
+            if not success:
+                print("发送失败，等待重连...")
+                time.sleep_ms(1000)
+                continue
+
+            # 定期状态报告
+            if time.ticks_diff(current_time, last_status_time) > 10000:
+                send_status(mqtt_mgr)
+                gc.collect()
+                last_status_time = current_time
+
+            # 精确控制帧率
+            frame_delay = max(50, int(1000 / camera.target_fps))
+            time.sleep_ms(frame_delay)
+
+        except Exception as e:
+            print("视频流错误:", e)
+            time.sleep_ms(2000)
+
+def main():
+    """主函数"""
+    global camera, network_mgr, mqtt_mgr
+    
+    print("=== OpenMV EMQX人脸识别视频流 ===")
+
+    # 初始化组件
+    camera = OpenMVCamera()
+    network_mgr = NetworkManager(SSID, KEY)
+    mqtt_mgr = MQTTManager(EMQX_BROKER, EMQX_PORT, EMQX_USERNAME, EMQX_PASSWORD)
+
+    # 初始化摄像头
+    if not camera.init_camera():
+        return
+
+    # 连接网络
+    if not network_mgr.connect_wifi():
+        return
+
+    # 连接EMQX
+    if not mqtt_mgr.connect():
+        return
+
+    print("系统就绪! 开始视频流传输...")
+    print("等待人脸识别结果...")
+    stream_video(mqtt_mgr, camera, network_mgr)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序错误:", e)
+    finally:
+        if mqtt_mgr and mqtt_mgr.client:
+            mqtt_mgr.client.disconnect()
+            

@@ -1,0 +1,170 @@
+{% extends "admin/base.html" %}
+
+{% block title %}用户管理{% endblock %}
+
+{% block content %}
+<h4 class="mb-4">用户管理</h4>
+
+<div class="card p-4 mb-4">
+    <h5>创建客户账号</h5>
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label">用户名</label>
+            <input type="text" id="newUsername" class="form-control" placeholder="客户登录名">
+        </div>
+        <div class="col-md-4">
+            <label class="form-label">初始密码</label>
+            <input type="password" id="newPassword" class="form-control">
+        </div>
+        <div class="col-md-4">
+            <button type="button" class="btn btn-primary" id="createUserBtn">创建用户</button>
+        </div>
+    </div>
+    <div id="userMsg" class="mt-2 small"></div>
+</div>
+
+<div class="card p-4">
+    <table class="table">
+        <thead>
+            <tr><th>ID</th><th>用户名</th><th>角色</th><th>状态</th><th>操作</th></tr>
+        </thead>
+        <tbody>
+        {% for u in users %}
+            <tr data-user-id="{{ u.id }}">
+                <td>{{ u.id }}</td>
+                <td>{{ u.username }}</td>
+                <td>{{ u.role }}</td>
+                <td>{% if u.is_active %}启用{% else %}禁用{% endif %}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary edit-user"
+                            data-id="{{ u.id }}"
+                            data-username="{{ u.username|e }}"
+                            data-role="{{ u.role }}"
+                            data-active="{% if u.is_active %}1{% else %}0{% endif %}">编辑</button>
+                    {% if u.role != 'admin' %}
+                    <button class="btn btn-sm btn-outline-secondary toggle-user">切换状态</button>
+                    <button class="btn btn-sm btn-outline-warning reset-pwd">重置密码</button>
+                    {% else %}
+                    <span class="text-muted">—</span>
+                    {% endif %}
+                </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="modal fade" id="editUserModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑用户</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editUserId">
+                <div class="mb-3">
+                    <label class="form-label">用户名</label>
+                    <input type="text" id="editUsername" class="form-control">
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">角色</label>
+                    <select id="editUserRole" class="form-select">
+                        <option value="user">普通用户</option>
+                        <option value="admin">管理员</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">状态</label>
+                    <select id="editUserActive" class="form-select">
+                        <option value="1">启用</option>
+                        <option value="0">禁用</option>
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">新密码（可选）</label>
+                    <input type="password" id="editUserPassword" class="form-control" placeholder="留空则不修改密码">
+                </div>
+                <div id="editUserMsg" class="small"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveUserBtn">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('createUserBtn').addEventListener('click', function () {
+    var username = document.getElementById('newUsername').value.trim();
+    var password = document.getElementById('newPassword').value;
+    var msg = document.getElementById('userMsg');
+    fetch('/admin/api/users', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({username: username, password: password})
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'mt-2 small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 800);
+    });
+});
+
+document.querySelectorAll('.toggle-user').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        var uid = this.closest('tr').dataset.userId;
+        fetch('/admin/api/users/' + uid + '/toggle', {method: 'POST'})
+            .then(function (r) { return r.json(); })
+            .then(function () { location.reload(); });
+    });
+});
+
+document.querySelectorAll('.reset-pwd').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        var pwd = prompt('输入新密码（至少4位）');
+        if (!pwd) return;
+        var uid = this.closest('tr').dataset.userId;
+        fetch('/admin/api/users/' + uid + '/reset_password', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({password: pwd})
+        }).then(function (r) { return r.json(); }).then(function (d) { alert(d.message); });
+    });
+});
+
+var editUserModal = new bootstrap.Modal(document.getElementById('editUserModal'));
+document.querySelectorAll('.edit-user').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        document.getElementById('editUserId').value = this.dataset.id;
+        document.getElementById('editUsername').value = this.dataset.username || '';
+        document.getElementById('editUserRole').value = this.dataset.role || 'user';
+        document.getElementById('editUserActive').value = this.dataset.active || '1';
+        document.getElementById('editUserPassword').value = '';
+        document.getElementById('editUserMsg').textContent = '';
+        editUserModal.show();
+    });
+});
+
+document.getElementById('saveUserBtn').addEventListener('click', function () {
+    var uid = document.getElementById('editUserId').value;
+    var msg = document.getElementById('editUserMsg');
+    fetch('/admin/api/users/' + uid, {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            username: document.getElementById('editUsername').value.trim(),
+            role: document.getElementById('editUserRole').value,
+            is_active: document.getElementById('editUserActive').value === '1',
+            password: document.getElementById('editUserPassword').value
+        })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 600);
+    });
+});
+</script>
+{% endblock %}

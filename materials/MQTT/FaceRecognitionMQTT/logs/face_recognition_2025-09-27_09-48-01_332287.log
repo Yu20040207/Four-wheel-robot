@@ -1,0 +1,4 @@
+2025-09-27 09:48:01.375 | INFO     | __main__:start:58 - 正在启动人脸识别MQTT服务...
+2025-09-27 09:48:01.398 | ERROR    | face_recognizer:setup_models:41 - 模型初始化失败: <class 'cv2.CascadeClassifier'> returned a result with an error set
+2025-09-27 09:48:01.399 | ERROR    | __main__:start:84 - 服务运行错误: <class 'cv2.CascadeClassifier'> returned a result with an error set
+2025-09-27 09:48:01.399 | INFO     | __main__:stop:93 - 服务已停止

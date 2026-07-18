@@ -1,0 +1,883 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container">
+    <div class="video-section">
+        <h2>实时视频流</h2>
+        <div class="video-container">
+            <img src="{{ url_for('video_feed') }}" alt="实时视频流" class="video-stream" id="videoStream">
+        </div>
+
+        <div class="control-panel">
+            <button id="startRecognition" class="btn btn-primary">启用人脸识别</button>
+            <button id="stopRecognition" class="btn btn-secondary">停止人脸识别</button>
+            <button id="refreshStream" class="btn btn-info">刷新视频流</button>
+            <button id="reloadFaces" class="btn btn-success">重新加载人脸</button>
+        </div>
+        <div id="controlMessage" class="message"></div>
+    </div>
+
+    <!-- 新增：人体跟踪控制面板 -->
+    <div class="human-tracking-section mt-4">
+        <h3>👤 人体跟踪控制</h3>
+        <div class="human-control-panel">
+            <div class="row mb-3">
+                <div class="col-md-3 mb-2">
+                    <button id="startHumanDetection" class="btn btn-warning w-100">
+                        🔍 开启人体检测
+                    </button>
+                </div>
+                <div class="col-md-3 mb-2">
+                    <button id="startHumanTracking" class="btn btn-success w-100">
+                        🎯 开始人体跟踪
+                    </button>
+                </div>
+                <div class="col-md-3 mb-2">
+                    <button id="stopHumanTracking" class="btn btn-secondary w-100">
+                        ⏹️ 停止跟踪
+                    </button>
+                </div>
+                <div class="col-md-3 mb-2">
+                    <button id="disableHumanTracking" class="btn btn-danger w-100">
+                        🔴 禁用人体跟踪
+                    </button>
+                </div>
+            </div>
+
+            <div class="human-tracking-info">
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">人体检测状态</h5>
+                                <div class="human-stats">
+                                    <p><strong>检测状态:</strong> <span id="humanDetectionStatus">未启用</span></p>
+                                    <p><strong>检测到人数:</strong> <span id="humanDetectedCount">0</span></p>
+                                    <p><strong>总检测人数:</strong> <span id="totalHumansDetected">0</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card">
+                            <div class="card-body">
+                                <h5 class="card-title">人体跟踪状态</h5>
+                                <div class="human-stats">
+                                    <p><strong>跟踪状态:</strong> <span id="humanTrackingStatus">未启用</span></p>
+                                    <p><strong>正在跟踪人数:</strong> <span id="humanTrackingCount">0</span></p>
+                                    <p><strong>当前目标:</strong> <span id="currentHumanTarget">无</span></p>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="humanTrackingMessage" class="message mt-2"></div>
+    </div>
+
+    <div class="stats-section">
+        <h3>系统状态</h3>
+        <div class="stats-grid">
+            <div class="stat-item">
+                <span class="stat-label">连接客户端:</span>
+                <span id="clientCount" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">接收帧数:</span>
+                <span id="frameCount" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">帧率:</span>
+                <span id="fps" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">已知人脸:</span>
+                <span id="knownFaces" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">识别状态:</span>
+                <span id="recognitionStatus" class="stat-value">未启动</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">采集状态:</span>
+                <span id="collectionStatus" class="stat-value">空闲</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">采集进度:</span>
+                <span id="collectionProgress" class="stat-value">0/5</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">已加载人脸:</span>
+                <span id="loadedFaces" class="stat-value">0</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">MQTT连接:</span>
+                <span id="mqttStatus" class="stat-value">断开</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">Flask识别:</span>
+                <span id="flaskRecognitionStatus" class="stat-value">未知</span>
+            </div>
+            <!-- 新增人体跟踪统计 -->
+            <div class="stat-item">
+                <span class="stat-label">人体检测:</span>
+                <span id="humanDetectionStat" class="stat-value">关闭</span>
+            </div>
+            <div class="stat-item">
+                <span class="stat-label">人体跟踪:</span>
+                <span id="humanTrackingStat" class="stat-value">关闭</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="add-face-section">
+        <h3>添加人脸</h3>
+        <div class="collection-info">
+            <p id="collectionMessage">请输入姓名开始人脸采集。系统将自动检测人脸并拍摄5张照片，每张间隔2秒。</p>
+        </div>
+        <div class="add-face-form">
+            <input type="text" id="personName" placeholder="输入姓名" class="name-input">
+            <button id="addFace" class="btn btn-warning">开始人脸采集</button>
+            <button id="cancelCollection" class="btn btn-danger" disabled style="display: none;">取消采集</button>
+        </div>
+
+        <div class="progress-container" id="progressContainer" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">采集进度: 0/5</div>
+        </div>
+    </div>
+
+
+    <!-- 识别结果发送区域 -->
+    <div class="control-section">
+        <h3>识别结果发送</h3>
+        <button id="sendRecognitionBtn" class="btn btn-warning">手动发送识别结果</button>
+        <div id="recognitionResultStatus" class="status-message"></div>
+    </div>
+</div>
+
+<script>
+// 全局变量
+let statsUpdateInterval;
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+    console.log('页面加载完成，初始化系统...');
+
+    // 启动状态更新
+    startStatsUpdate();
+
+    // 绑定按钮事件
+    bindButtonEvents();
+
+    // 绑定人体跟踪按钮事件
+    bindHumanTrackingEvents();
+});
+
+// 开始定期更新状态
+function startStatsUpdate() {
+    console.log('启动状态更新定时器...');
+
+    // 立即更新一次
+    updateStats();
+
+    // 每1秒更新一次状态（更频繁的更新）
+    statsUpdateInterval = setInterval(updateStats, 1000);
+}
+
+// 更新系统状态
+function updateStats() {
+    fetch('/api/stats')
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('网络响应不正常');
+            }
+            return response.json();
+        })
+        .then(data => {
+            console.log('收到状态数据:', data);
+
+            // 更新统计数据
+            updateElementText('clientCount', data.clients || 0);
+            updateElementText('frameCount', data.frames_received || 0);
+            updateElementText('fps', (data.fps || 0).toFixed(1));
+            updateElementText('knownFaces', data.known_faces || 0);
+            updateElementText('loadedFaces', data.loaded_faces || 0);
+
+            // 更新人体跟踪状态
+            updateElementText('humanDetectionStat', data.human_tracking_enabled ? '开启' : '关闭');
+            updateElementText('humanTrackingStat', data.human_tracking_active ? '跟踪中' : '关闭');
+
+            // 更新人体跟踪详细信息
+            updateElementText('humanDetectionStatus', data.human_tracking_enabled ? '启用' : '未启用');
+            updateElementText('humanDetectedCount', data.humans_detected || 0);
+            updateElementText('totalHumansDetected', data.human_tracking_stats?.total_humans_detected || 0);
+            updateElementText('humanTrackingStatus', data.human_tracking_active ? '跟踪中' : '未启用');
+            updateElementText('humanTrackingCount', data.humans_tracking || 0);
+
+            // 更新当前目标
+            const currentTargetElement = document.getElementById('currentHumanTarget');
+            if (currentTargetElement) {
+                if (data.current_human_target) {
+                    currentTargetElement.textContent = `ID: ${data.current_human_target.id}`;
+                } else {
+                    currentTargetElement.textContent = '无';
+                }
+            }
+
+            // 更新MQTT状态
+            const mqttStatus = document.getElementById('mqttStatus');
+            if (data.mqtt_connected) {
+                mqttStatus.textContent = '已连接';
+                mqttStatus.className = 'stat-value status-running';
+            } else {
+                mqttStatus.textContent = '断开';
+                mqttStatus.className = 'stat-value';
+            }
+
+            // 更新识别状态
+            const recognitionStatus = document.getElementById('recognitionStatus');
+            if (data.recognition_enabled) {
+                recognitionStatus.textContent = '运行中';
+                recognitionStatus.className = 'stat-value status-running';
+            } else {
+                recognitionStatus.textContent = '未启动';
+                recognitionStatus.className = 'stat-value';
+            }
+
+            // 更新采集状态
+            updateCollectionStatus(data);
+
+            // 获取Flask识别状态
+            fetch('/api/flask_status')
+                .then(response => response.json())
+                .then(flaskData => {
+                    const flaskStatus = document.getElementById('flaskRecognitionStatus');
+                    if (flaskStatus) {
+                        if (flaskData.recognition_enabled) {
+                            flaskStatus.textContent = '运行中';
+                            flaskStatus.className = 'stat-value status-running';
+                        } else {
+                            flaskStatus.textContent = '未启动';
+                            flaskStatus.className = 'stat-value';
+                        }
+                    }
+                })
+                .catch(error => {
+                    console.error('获取Flask状态失败:', error);
+                });
+        })
+        .catch(error => {
+            console.error('获取状态失败:', error);
+            // 显示错误状态
+            updateElementText('clientCount', '错误');
+            updateElementText('frameCount', '错误');
+            updateElementText('fps', '错误');
+        });
+}
+
+// 更新元素文本的辅助函数
+function updateElementText(elementId, text) {
+    const element = document.getElementById(elementId);
+    if (element) {
+        element.textContent = text;
+    } else {
+        console.warn('元素未找到:', elementId);
+    }
+}
+
+// 更新采集状态
+function updateCollectionStatus(data) {
+    const collectionStatus = document.getElementById('collectionStatus');
+    const collectionProgress = document.getElementById('collectionProgress');
+    const progressContainer = document.getElementById('progressContainer');
+    const progressFill = document.getElementById('progressFill');
+    const progressText = document.getElementById('progressText');
+    const collectionMessage = document.getElementById('collectionMessage');
+    const addFaceBtn = document.getElementById('addFace');
+    const cancelCollectionBtn = document.getElementById('cancelCollection');
+
+    if (!collectionStatus || !collectionProgress) {
+        console.error('采集状态元素未找到');
+        return;
+    }
+
+    if (data.face_collection_active) {
+        collectionStatus.textContent = '采集中';
+        collectionStatus.className = 'stat-value status-collecting';
+        collectionProgress.textContent = data.collection_progress || '0/5';
+
+        // 显示进度条
+        if (progressContainer) {
+            progressContainer.style.display = 'block';
+        }
+
+        // 更新进度条
+        if (progressFill && progressText) {
+            const progress = data.collection_progress ? data.collection_progress.split('/') : ['0', '5'];
+            const current = parseInt(progress[0]) || 0;
+            const total = parseInt(progress[1]) || 5;
+            const percentage = (current / total) * 100;
+
+            progressFill.style.width = percentage + '%';
+            progressText.textContent = `采集进度: ${current}/${total}`;
+        }
+
+        // 获取采集状态详情
+        fetch('/api/collection_status')
+            .then(response => response.json())
+            .then(collectionData => {
+                if (collectionMessage) {
+                    collectionMessage.textContent = collectionData.status_message || '正在采集人脸数据...';
+                }
+            })
+            .catch(error => {
+                console.error('获取采集状态失败:', error);
+            });
+
+        // 禁用开始按钮，启用取消按钮
+        if (addFaceBtn) {
+            addFaceBtn.disabled = true;
+        }
+        if (cancelCollectionBtn) {
+            cancelCollectionBtn.disabled = false;
+            cancelCollectionBtn.style.display = 'inline-block';
+        }
+    } else {
+        collectionStatus.textContent = '空闲';
+        collectionStatus.className = 'stat-value';
+        collectionProgress.textContent = '0/5';
+
+        // 隐藏进度条
+        if (progressContainer) {
+            progressContainer.style.display = 'none';
+        }
+        if (collectionMessage) {
+            collectionMessage.textContent = '请输入姓名开始人脸采集。系统将自动检测人脸并拍摄5张照片，每张间隔2秒。';
+        }
+
+        // 启用开始按钮，隐藏取消按钮
+        if (addFaceBtn) {
+            addFaceBtn.disabled = false;
+        }
+        if (cancelCollectionBtn) {
+            cancelCollectionBtn.disabled = true;
+            cancelCollectionBtn.style.display = 'none';
+        }
+    }
+}
+
+// 绑定按钮事件
+function bindButtonEvents() {
+    console.log('绑定按钮事件...');
+
+    // 启用人脸识别
+    const startBtn = document.getElementById('startRecognition');
+    if (startBtn) {
+        startBtn.addEventListener('click', function() {
+            fetch('/api/face_recognition/start')
+                .then(response => response.json())
+                .then(data => {
+                    showMessage(data.message, data.status);
+                    updateStats(); // 立即更新状态
+                })
+                .catch(error => {
+                    showMessage('请求失败: ' + error.message, 'error');
+                });
+        });
+    }
+
+    // 停止人脸识别
+    const stopBtn = document.getElementById('stopRecognition');
+    if (stopBtn) {
+        stopBtn.addEventListener('click', function() {
+            fetch('/api/face_recognition/stop')
+                .then(response => response.json())
+                .then(data => {
+                    showMessage(data.message, data.status);
+                    updateStats(); // 立即更新状态
+                })
+                .catch(error => {
+                    showMessage('请求失败: ' + error.message, 'error');
+                });
+        });
+    }
+
+    // 刷新视频流
+    const refreshBtn = document.getElementById('refreshStream');
+    if (refreshBtn) {
+        refreshBtn.addEventListener('click', function() {
+            fetch('/api/refresh_stream')
+                .then(response => response.json())
+                .then(data => {
+                    showMessage(data.message, data.status);
+                    // 重新加载视频流
+                    const videoImg = document.getElementById('videoStream');
+                    if (videoImg) {
+                        videoImg.src = videoImg.src.split('?')[0] + '?t=' + new Date().getTime();
+                    }
+                })
+                .catch(error => {
+                    showMessage('请求失败: ' + error.message, 'error');
+                });
+        });
+    }
+
+    // 重新加载人脸
+    const reloadBtn = document.getElementById('reloadFaces');
+    if (reloadBtn) {
+        reloadBtn.addEventListener('click', function() {
+            fetch('/api/reload_faces')
+                .then(response => response.json())
+                .then(data => {
+                    showMessage(data.message, data.status);
+                    updateStats(); // 立即更新状态
+                })
+                .catch(error => {
+                    showMessage('请求失败: ' + error.message, 'error');
+                });
+        });
+    }
+
+    // 添加人脸
+    const addFaceBtn = document.getElementById('addFace');
+    if (addFaceBtn) {
+        addFaceBtn.addEventListener('click', function() {
+            const personNameInput = document.getElementById('personName');
+            if (!personNameInput) return;
+
+            const personName = personNameInput.value.trim();
+            if (!personName) {
+                showMessage('请输入姓名', 'error');
+                return;
+            }
+
+            fetch('/api/add_face', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ name: personName })
+            })
+            .then(response => response.json())
+            .then(data => {
+                showMessage(data.message, data.status);
+                // 清空输入框
+                personNameInput.value = '';
+                updateStats(); // 立即更新状态
+            })
+            .catch(error => {
+                showMessage('请求失败: ' + error.message, 'error');
+            });
+        });
+    }
+
+    // 取消采集按钮事件
+    const cancelCollectionBtn = document.getElementById('cancelCollection');
+    if (cancelCollectionBtn) {
+        cancelCollectionBtn.addEventListener('click', function() {
+            console.log('取消采集按钮被点击');
+
+            // 显示加载状态
+            const originalText = cancelCollectionBtn.textContent;
+            cancelCollectionBtn.textContent = '取消中...';
+            cancelCollectionBtn.disabled = true;
+
+            // 发送取消请求
+            fetch('/api/cancel_collection', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                }
+            })
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('网络响应不正常');
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('取消采集响应:', data);
+
+                // 显示消息
+                showMessage(data.message, data.status);
+
+                // 立即更新状态
+                updateStats();
+
+                // 恢复按钮状态
+                setTimeout(() => {
+                    cancelCollectionBtn.textContent = originalText;
+                    cancelCollectionBtn.disabled = false;
+                }, 1000);
+
+                // 如果取消成功，重新加载视频流以清除采集框
+                if (data.status === 'success') {
+                    const videoImg = document.getElementById('videoStream');
+                    if (videoImg) {
+                        videoImg.src = videoImg.src.split('?')[0] + '?t=' + new Date().getTime();
+                    }
+                }
+            })
+            .catch(error => {
+                console.error('取消采集失败:', error);
+                showMessage('取消采集失败: ' + error.message, 'error');
+
+                // 恢复按钮状态
+                cancelCollectionBtn.textContent = originalText;
+                cancelCollectionBtn.disabled = false;
+            });
+        });
+    }
+
+    // 发送识别结果
+    const sendRecognitionBtn = document.getElementById('sendRecognitionBtn');
+    if (sendRecognitionBtn) {
+        sendRecognitionBtn.addEventListener('click', sendRecognitionResult);
+    }
+}
+
+// 绑定人体跟踪按钮事件
+function bindHumanTrackingEvents() {
+    console.log('绑定人体跟踪按钮事件...');
+
+    // 开启人体检测
+    const startDetectionBtn = document.getElementById('startHumanDetection');
+    if (startDetectionBtn) {
+        startDetectionBtn.addEventListener('click', function() {
+            controlHumanTracking('start_detection');
+        });
+    }
+
+    // 开始人体跟踪
+    const startTrackingBtn = document.getElementById('startHumanTracking');
+    if (startTrackingBtn) {
+        startTrackingBtn.addEventListener('click', function() {
+            controlHumanTracking('start_tracking');
+        });
+    }
+
+    // 停止人体跟踪
+    const stopTrackingBtn = document.getElementById('stopHumanTracking');
+    if (stopTrackingBtn) {
+        stopTrackingBtn.addEventListener('click', function() {
+            controlHumanTracking('stop_tracking');
+        });
+    }
+
+    // 禁用人体跟踪
+    const disableTrackingBtn = document.getElementById('disableHumanTracking');
+    if (disableTrackingBtn) {
+        disableTrackingBtn.addEventListener('click', function() {
+            controlHumanTracking('disable');
+        });
+    }
+}
+
+// 控制人体跟踪
+function controlHumanTracking(action) {
+    const messageDiv = document.getElementById('humanTrackingMessage');
+
+    fetch(`/api/human_tracking/${action}`)
+        .then(response => response.json())
+        .then(data => {
+            showHumanTrackingMessage(data.message, data.status);
+            updateStats(); // 立即更新状态
+
+            // 重新加载视频流以显示人体检测框
+            const videoImg = document.getElementById('videoStream');
+            if (videoImg) {
+                videoImg.src = videoImg.src.split('?')[0] + '?t=' + new Date().getTime();
+            }
+        })
+        .catch(error => {
+            showHumanTrackingMessage('请求失败: ' + error.message, 'error');
+        });
+}
+
+// 显示人体跟踪消息
+function showHumanTrackingMessage(message, type) {
+    const messageDiv = document.getElementById('humanTrackingMessage');
+    if (messageDiv) {
+        messageDiv.textContent = message;
+        messageDiv.className = type === 'success' ? 'message success' : 'message error';
+
+        // 3秒后清除消息
+        setTimeout(() => {
+            messageDiv.textContent = '';
+            messageDiv.className = 'message';
+        }, 3000);
+    }
+}
+
+// 发送识别结果
+function sendRecognitionResult() {
+    fetch('/api/send_recognition_result')
+        .then(response => response.json())
+        .then(data => {
+            const statusDiv = document.getElementById('recognitionResultStatus');
+            if (statusDiv) {
+                statusDiv.textContent = data.message;
+                statusDiv.className = data.status === 'success' ? 'status-success' : 'status-error';
+
+                // 3秒后清除状态消息
+                setTimeout(() => {
+                    statusDiv.textContent = '';
+                }, 3000);
+            }
+        })
+        .catch(error => {
+            console.error('发送识别结果失败:', error);
+        });
+}
+
+// 显示消息
+function showMessage(message, type) {
+    const messageDiv = document.getElementById('controlMessage');
+    if (messageDiv) {
+        messageDiv.textContent = message;
+        messageDiv.className = type === 'success' ? 'message success' : 'message error';
+
+        // 3秒后清除消息
+        setTimeout(() => {
+            messageDiv.textContent = '';
+            messageDiv.className = 'message';
+        }, 3000);
+    }
+}
+
+// 页面卸载时清除定时器
+window.addEventListener('beforeunload', function() {
+    if (statsUpdateInterval) {
+        clearInterval(statsUpdateInterval);
+        console.log('清理状态更新定时器');
+    }
+});
+</script>
+
+<style>
+.stat-value.status-running {
+    color: #28a745;
+    font-weight: bold;
+}
+
+.stat-value.status-collecting {
+    color: #ffc107;
+    font-weight: bold;
+}
+
+.status-success {
+    color: #28a745;
+    padding: 5px;
+    margin-top: 5px;
+    font-weight: bold;
+}
+
+.status-error {
+    color: #dc3545;
+    padding: 5px;
+    margin-top: 5px;
+    font-weight: bold;
+}
+
+.progress-container {
+    margin-top: 15px;
+    padding: 10px;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 20px;
+    background-color: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background-color: #28a745;
+    width: 0%;
+    transition: width 0.5s ease;
+}
+
+.progress-text {
+    text-align: center;
+    margin-top: 5px;
+    font-size: 14px;
+    color: #666;
+    font-weight: bold;
+}
+
+.message {
+    margin-top: 10px;
+    padding: 10px;
+    border-radius: 5px;
+}
+
+.message.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.message.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.btn-danger {
+    background-color: #dc3545;
+    border-color: #dc3545;
+    color: white;
+    margin-left: 10px;
+}
+
+.btn-danger:hover {
+    background-color: #c82333;
+    border-color: #bd2130;
+}
+
+.btn-danger:disabled {
+    background-color: #e9ecef;
+    border-color: #dee2e6;
+    color: #6c757d;
+    cursor: not-allowed;
+}
+
+.add-face-form {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    margin-top: 15px;
+}
+
+.name-input {
+    flex: 1;
+    padding: 8px 12px;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+/* 人体跟踪样式 */
+.human-tracking-section {
+    background-color: #f8f9fa;
+    padding: 20px;
+    border-radius: 10px;
+    border: 1px solid #dee2e6;
+}
+
+.human-control-panel {
+    margin-bottom: 20px;
+}
+
+.human-tracking-info {
+    margin-top: 20px;
+}
+
+.human-stats p {
+    margin-bottom: 8px;
+    font-size: 14px;
+}
+
+.human-stats strong {
+    color: #495057;
+    margin-right: 10px;
+}
+
+.card {
+    height: 100%;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+}
+
+.card-body {
+    padding: 15px;
+}
+
+.card-title {
+    color: #495057;
+    margin-bottom: 15px;
+    font-size: 16px;
+    font-weight: 600;
+}
+
+.btn-warning {
+    background-color: #ffc107;
+    border-color: #ffc107;
+    color: #212529;
+}
+
+.btn-warning:hover {
+    background-color: #e0a800;
+    border-color: #d39e00;
+}
+
+.btn-success {
+    background-color: #28a745;
+    border-color: #28a745;
+}
+
+.btn-success:hover {
+    background-color: #218838;
+    border-color: #1e7e34;
+}
+
+.btn-secondary {
+    background-color: #6c757d;
+    border-color: #6c757d;
+}
+
+.btn-secondary:hover {
+    background-color: #5a6268;
+    border-color: #545b62;
+}
+
+.mt-4 {
+    margin-top: 1.5rem !important;
+}
+
+.mb-3 {
+    margin-bottom: 1rem !important;
+}
+
+.mb-2 {
+    margin-bottom: 0.5rem !important;
+}
+
+.row {
+    display: flex;
+    flex-wrap: wrap;
+    margin-right: -15px;
+    margin-left: -15px;
+}
+
+.col-md-3, .col-md-6 {
+    position: relative;
+    width: 100%;
+    padding-right: 15px;
+    padding-left: 15px;
+}
+
+@media (min-width: 768px) {
+    .col-md-3 {
+        flex: 0 0 25%;
+        max-width: 25%;
+    }
+    .col-md-6 {
+        flex: 0 0 50%;
+        max-width: 50%;
+    }
+}
+
+.w-100 {
+    width: 100% !important;
+}
+</style>
+{% endblock %}

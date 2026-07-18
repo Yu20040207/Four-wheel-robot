@@ -1,0 +1,293 @@
+# openmv_stable_face_detection_v2.py
+# 基于稳定人脸采集程序的优化版本
+import sensor, image, time, machine
+import json
+from pyb import UART, LED
+import gc
+
+class StableFaceDetector:
+    def __init__(self):
+        # LED指示灯
+        self.red_led = machine.LED("LED_RED")
+        self.blue_led = machine.LED("LED_BLUE") 
+        self.green_led = machine.LED("LED_GREEN")
+        
+        # 串口配置 - 连接ESP8266
+        self.uart = UART(3, 9600)
+        self.uart.init(9600, bits=8, parity=None, stop=1, timeout_char=1000)
+        
+        # 使用稳定的人脸采集程序中的相机参数
+        self.init_camera()
+        
+        # 检测参数（基于稳定程序优化）
+        self.detection_interval = 500     # 检测间隔(ms)
+        self.send_interval = 1000         # 发送间隔(ms)
+        self.min_face_size = (30, 30)     # 最小人脸尺寸
+        
+        # 状态变量
+        self.detecting = False
+        self.last_detection_time = 0
+        self.last_send_time = 0
+        self.frame_count = 0
+        self.face_count = 0
+        
+        # 性能监控
+        self.fps = 0
+        self.fps_timer = time.ticks_ms()
+        self.fps_counter = 0
+
+    def init_camera(self):
+        """使用稳定程序的相机初始化参数"""
+        print("初始化相机使用稳定参数...")
+        sensor.reset()
+        sensor.set_contrast(3)
+        sensor.set_gainceiling(16)
+        sensor.set_pixformat(sensor.GRAYSCALE)
+        
+        # 使用稳定的分辨率设置
+        sensor.set_framesize(sensor.B128X128)  # 128x128分辨率
+        sensor.set_windowing((92, 112))        # 92x112窗口
+        
+        sensor.set_auto_gain(False)
+        sensor.set_auto_whitebal(False) 
+        sensor.set_auto_exposure(False, exposure_us=10000)
+        sensor.skip_frames(30)
+        
+        print("相机初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+    def stable_face_detect(self, img):
+        """
+        使用稳定程序的人脸检测方法
+        返回检测到的人脸区域列表
+        """
+        try:
+            # 使用与稳定程序相同的检测参数
+            faces = img.find_features(
+                image.HaarCascade("frontalface", stages=20),  # 使用内置的frontalface
+                threshold=0.4,      # 降低阈值提高检测率
+                scale_factor=1.1,   # 缩放因子
+                min_size=self.min_face_size
+            )
+            
+            # 过滤有效人脸
+            valid_faces = []
+            for (x, y, w, h) in faces:
+                # 确保人脸在图像范围内
+                if (x >= 0 and y >= 0 and 
+                    x + w <= img.width() and 
+                    y + h <= img.height() and
+                    w >= self.min_face_size[0] and 
+                    h >= self.min_face_size[1]):
+                    
+                    valid_faces.append((x, y, w, h))
+            
+            return valid_faces
+            
+        except Exception as e:
+            print("人脸检测错误:", e)
+            return []
+
+    def send_face_data(self, faces):
+        """发送人脸数据到ESP8266"""
+        current_time = time.ticks_ms()
+        
+        # 控制发送频率
+        if time.ticks_diff(current_time, self.last_send_time) < self.send_interval:
+            return False
+        
+        if not faces:
+            return False
+            
+        try:
+            # 简化数据格式
+            data = {
+                'time': current_time,
+                'count': len(faces),
+                'faces': []
+            }
+            
+            # 添加人脸信息
+            for i, (x, y, w, h) in enumerate(faces):
+                data['faces'].append({
+                    'id': i,
+                    'x': x, 'y': y, 
+                    'w': w, 'h': h,
+                    'area': w * h
+                })
+            
+            # 发送JSON数据
+            json_str = json.dumps(data) + '\n'
+            bytes_sent = self.uart.write(json_str)
+            
+            if bytes_sent > 0:
+                self.blue_led.on()
+                time.sleep(20)
+                self.blue_led.off()
+                
+                print("发送: {}人脸".format(len(faces)))
+                self.face_count += len(faces)
+                self.last_send_time = current_time
+                return True
+                
+        except Exception as e:
+            print("发送错误:", e)
+            self.red_led.on()
+            time.sleep(100)
+            self.red_led.off()
+            
+        return False
+
+    def process_frame(self):
+        """处理单帧图像"""
+        current_time = time.ticks_ms()
+        
+        # 控制处理频率
+        if time.ticks_diff(current_time, self.last_detection_time) < self.detection_interval:
+            return None, []
+        
+        self.last_detection_time = current_time
+        
+        try:
+            # 捕获图像
+            img = sensor.snapshot()
+            self.frame_count += 1
+            self.fps_counter += 1
+            
+            # 人脸检测
+            faces = self.stable_face_detect(img)
+            
+            # 在图像上绘制检测结果
+            if faces:
+                self.green_led.on()
+                for (x, y, w, h) in faces:
+                    img.draw_rectangle(x, y, w, h, color=255, thickness=2)
+                time.sleep(10)
+                self.green_led.off()
+            
+            # 显示帧率信息
+            if self.frame_count % 5 == 0:
+                img.draw_string(2, 2, "F:{}".format(self.frame_count), color=255)
+                if faces:
+                    img.draw_string(2, 12, "Faces:{}".format(len(faces)), color=255)
+            
+            return img, faces
+            
+        except Exception as e:
+            print("帧处理错误:", e)
+            return None, []
+
+    def calculate_fps(self):
+        """计算帧率"""
+        current_time = time.ticks_ms()
+        if time.ticks_diff(current_time, self.fps_timer) >= 1000:
+            self.fps = self.fps_counter
+            self.fps_counter = 0
+            self.fps_timer = current_time
+            
+            if self.fps > 0:
+                print("FPS: {}, 总人脸: {}".format(self.fps, self.face_count))
+
+    def handle_uart_commands(self):
+        """处理串口命令"""
+        if self.uart.any():
+            try:
+                command = self.uart.readall().decode().strip()
+                if command:
+                    print("收到命令:", command)
+                    
+                    if command == "STATUS":
+                        status = {
+                            'type': 'status',
+                            'frames': self.frame_count,
+                            'faces': self.face_count,
+                            'fps': self.fps,
+                            'time': time.ticks_ms()
+                        }
+                        self.uart.write(json.dumps(status) + '\n')
+                        
+                    elif command == "RESTART":
+                        machine.reset()
+                        
+            except Exception as e:
+                print("命令处理错误:", e)
+
+    def system_health_check(self):
+        """系统健康检查"""
+        if self.frame_count % 50 == 0 and self.frame_count > 0:
+            print("系统状态 - 帧: {}, 人脸: {}, 内存: {}".format(
+                self.frame_count, self.face_count, gc.mem_free()))
+            gc.collect()
+
+    def start_detection(self):
+        """开始人脸检测"""
+        print("启动稳定人脸检测系统...")
+        print("检测间隔: {}ms".format(self.detection_interval))
+        print("发送间隔: {}ms".format(self.send_interval))
+        
+        # 启动指示灯
+        for i in range(3):
+            self.green_led.on()
+            time.sleep(100)
+            self.green_led.off()
+            time.sleep(100)
+        
+        self.detecting = True
+        print("开始检测...")
+        
+        try:
+            while self.detecting:
+                # 处理串口命令
+                self.handle_uart_commands()
+                
+                # 处理图像帧
+                img, faces = self.process_frame()
+                
+                # 发送检测结果
+                if faces:
+                    self.send_face_data(faces)
+                
+                # 计算帧率
+                self.calculate_fps()
+                
+                # 系统健康检查
+                self.system_health_check()
+                
+                # 短暂延迟
+                time.sleep(10)
+                
+        except Exception as e:
+            print("检测循环错误:", e)
+            self.red_led.on()
+            time.sleep(1000)
+            self.red_led.off()
+
+    def stop_detection(self):
+        """停止检测"""
+        self.detecting = False
+        print("停止人脸检测")
+
+# 主程序
+def main():
+    try:
+        # 创建检测器实例
+        detector = StableFaceDetector()
+        
+        # 开始检测
+        detector.start_detection()
+        
+    except Exception as e:
+        print("主程序错误:", e)
+        # 错误指示灯
+        machine.LED("LED_RED").on()
+        time.sleep(2000)
+        machine.LED("LED_RED").off()
+        
+        # 尝试重启
+        print("尝试重启...")
+        time.sleep(3000)
+        machine.reset()
+
+# 运行程序
+if __name__ == '__main__':
+    main()
+    

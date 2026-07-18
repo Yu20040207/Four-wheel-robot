@@ -1,0 +1,1484 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="container-fluid">
+    <h2 class="mb-4"><i class="fas fa-clock me-2"></i>上下班打卡系统</h2>
+
+    <!-- 控制面板 -->
+    <div class="row mb-4">
+        <div class="col-md-6">
+            <div class="card shadow-sm">
+                <div class="card-header bg-primary text-white">
+                    <h5 class="mb-0"><i class="fas fa-cog me-2"></i>打卡系统设置</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-4">
+                        <label class="form-label fw-bold fs-6">打卡系统控制</label>
+                        <div class="d-flex align-items-center gap-4 mt-3">
+                            <button id="startAttendanceBtn" class="btn btn-success btn-lg px-4 py-2" onclick="toggleAttendanceSystem(true)">
+                                <i class="fas fa-play-circle me-2"></i>开启打卡
+                            </button>
+                            <button id="stopAttendanceBtn" class="btn btn-danger btn-lg px-4 py-2" onclick="toggleAttendanceSystem(false)">
+                                <i class="fas fa-stop-circle me-2"></i>关闭打卡
+                            </button>
+                        </div>
+                        <div class="mt-3">
+                            <span id="attendanceStatus" class="badge fs-6 p-2">系统已关闭</span>
+                        </div>
+                    </div>
+
+                    <div class="time-settings mt-4 pt-3 border-top">
+                        <h6 class="fw-bold border-bottom pb-2 mb-3">打卡时间设置</h6>
+                        <div class="row mt-3 g-3">
+                            <div class="col-md-6">
+                                <div class="time-setting-card p-3 border rounded bg-light">
+                                    <label class="form-label fw-semibold">早上上班时间</label>
+                                    <div class="time-input p-3 border rounded bg-white"
+                                         ondblclick="startEditTime(this, 'morning_start')">
+                                        <span class="time-value fs-4 fw-bold text-primary" id="morningStartTime">09:00</span>
+                                        <input type="time" class="time-edit form-control form-control-lg" style="display: none;"
+                                               onblur="saveTime(this, 'morning_start')"
+                                               onkeypress="handleTimeKeyPress(event, this, 'morning_start')">
+                                    </div>
+                                    <small class="text-muted mt-2 d-block">双击时间进行编辑</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="time-setting-card p-3 border rounded bg-light">
+                                    <label class="form-label fw-semibold">中午下班时间</label>
+                                    <div class="time-input p-3 border rounded bg-white"
+                                         ondblclick="startEditTime(this, 'morning_end')">
+                                        <span class="time-value fs-4 fw-bold text-primary" id="morningEndTime">12:00</span>
+                                        <input type="time" class="time-edit form-control form-control-lg" style="display: none;"
+                                               onblur="saveTime(this, 'morning_end')"
+                                               onkeypress="handleTimeKeyPress(event, this, 'morning_end')">
+                                    </div>
+                                    <small class="text-muted mt-2 d-block">双击时间进行编辑</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="time-setting-card p-3 border rounded bg-light">
+                                    <label class="form-label fw-semibold">中午上班时间</label>
+                                    <div class="time-input p-3 border rounded bg-white"
+                                         ondblclick="startEditTime(this, 'afternoon_start')">
+                                        <span class="time-value fs-4 fw-bold text-primary" id="afternoonStartTime">13:00</span>
+                                        <input type="time" class="time-edit form-control form-control-lg" style="display: none;"
+                                               onblur="saveTime(this, 'afternoon_start')"
+                                               onkeypress="handleTimeKeyPress(event, this, 'afternoon_start')">
+                                    </div>
+                                    <small class="text-muted mt-2 d-block">双击时间进行编辑</small>
+                                </div>
+                            </div>
+                            <div class="col-md-6">
+                                <div class="time-setting-card p-3 border rounded bg-light">
+                                    <label class="form-label fw-semibold">晚上下班时间</label>
+                                    <div class="time-input p-3 border rounded bg-white"
+                                         ondblclick="startEditTime(this, 'afternoon_end')">
+                                        <span class="time-value fs-4 fw-bold text-primary" id="afternoonEndTime">18:00</span>
+                                        <input type="time" class="time-edit form-control form-control-lg" style="display: none;"
+                                               onblur="saveTime(this, 'afternoon_end')"
+                                               onkeypress="handleTimeKeyPress(event, this, 'afternoon_end')">
+                                    </div>
+                                    <small class="text-muted mt-2 d-block">双击时间进行编辑</small>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card shadow-sm h-100">
+                <div class="card-header bg-success text-white">
+                    <h5 class="mb-0"><i class="fas fa-chart-bar me-2"></i>日期统计</h5>
+                </div>
+                <div class="card-body">
+                    <!-- 日期选择器 -->
+                    <div class="date-selector mb-4">
+                        <label class="form-label fw-semibold">选择日期</label>
+                        <div class="input-group">
+                            <input type="date" class="form-control form-control-lg" id="dateFilter"
+                                   value="{{ today }}">
+                            <button class="btn btn-primary" type="button" onclick="applyDateFilter()">
+                                <i class="fas fa-filter me-1"></i>筛选
+                            </button>
+                            <button class="btn btn-outline-secondary" type="button" onclick="clearDateFilter()">
+                                <i class="fas fa-times me-1"></i>清除
+                            </button>
+                        </div>
+                        <div class="mt-2">
+                            <small class="text-muted" id="currentDateDisplay">当前显示: 今日记录</small>
+                        </div>
+                    </div>
+
+                    <div class="row text-center g-3">
+                        <div class="col-6 col-md-6">
+                            <div class="stat-card border rounded p-4 bg-light shadow-sm" onclick="showStatusRecords('all')" style="cursor: pointer;">
+                                <div class="fs-2 fw-bold text-primary mb-2" id="todayCheckins">0</div>
+                                <div class="text-muted small fw-semibold">打卡</div>
+                                <small class="text-muted">点击查看详情</small>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-6">
+                            <div class="stat-card border rounded p-4 bg-light shadow-sm" onclick="showStatusRecords('正常')" style="cursor: pointer;">
+                                <div class="fs-2 fw-bold text-success mb-2" id="onTimeCount">0</div>
+                                <div class="text-muted small fw-semibold">准时</div>
+                                <small class="text-muted">点击查看详情</small>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-6">
+                            <div class="stat-card border rounded p-4 bg-light shadow-sm" onclick="showStatusRecords('迟到')" style="cursor: pointer;">
+                                <div class="fs-2 fw-bold text-warning mb-2" id="lateCount">0</div>
+                                <div class="text-muted small fw-semibold">迟到</div>
+                                <small class="text-muted">点击查看详情</small>
+                            </div>
+                        </div>
+                        <div class="col-6 col-md-6">
+                            <div class="stat-card border rounded p-4 bg-light shadow-sm" onclick="showStatusRecords('早退')" style="cursor: pointer;">
+                                <div class="fs-2 fw-bold text-danger mb-2" id="earlyLeaveCount">0</div>
+                                <div class="text-muted small fw-semibold">早退</div>
+                                <small class="text-muted">点击查看详情</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 人脸识别状态 -->
+                    <div class="recognition-status mt-4 pt-3 border-top">
+                        <h6 class="fw-bold border-bottom pb-2 mb-3">人脸识别状态</h6>
+                        <div class="row g-3">
+                            <div class="col-12">
+                                <div class="d-flex justify-content-between align-items-center p-3 border rounded bg-light">
+                                    <span class="fw-semibold">识别状态:</span>
+                                    <span id="recognitionStatus" class="badge fs-6">未知</span>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="recognition-results p-3 border rounded bg-light">
+                                    <div class="d-flex justify-content-between align-items-center mb-2">
+                                        <span class="fw-semibold">最近识别:</span>
+                                        <small class="text-muted" id="recognitionCount">0 人</small>
+                                    </div>
+                                    <div id="recognitionNames" class="recognition-names">
+                                        <div class="text-center text-muted py-2">
+                                            <i class="fas fa-user fa-lg me-2"></i>
+                                            <span>暂无识别记录</span>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 打卡记录表格 -->
+    <div class="card shadow-sm">
+        <div class="card-header bg-info text-white d-flex justify-content-between align-items-center">
+            <h5 class="mb-0"><i class="fas fa-history me-2"></i>打卡记录</h5>
+            <div>
+                <button class="btn btn-success btn-lg me-2" onclick="exportToExcel()">
+                    <i class="fas fa-file-excel me-2"></i> 导出Excel
+                </button>
+                <button class="btn btn-light btn-lg" onclick="loadAttendanceRecords()">
+                    <i class="fas fa-sync-alt me-2"></i> 刷新
+                </button>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="table-responsive">
+                <table class="table table-striped table-hover" id="attendanceTable">
+                    <thead class="table-dark">
+                        <tr>
+                            <th class="p-3">姓名</th>
+                            <th class="p-3">日期</th>
+                            <th class="p-3">上午上班</th>
+                            <th class="p-3">上午下班</th>
+                            <th class="p-3">下午上班</th>
+                            <th class="p-3">下午下班</th>
+                            <th class="p-3">状态</th>
+                            <th class="p-3">工作时长</th>
+                            <th class="p-3">操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="attendanceRecords">
+                        <tr>
+                            <td colspan="9" class="text-center text-muted py-5">
+                                <i class="fas fa-inbox fa-3x mb-3 opacity-50"></i><br>
+                                <span class="fs-5">暂无打卡记录</span><br>
+                                <small class="text-muted">开启打卡系统后，识别到的人脸将自动记录为打卡</small>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 状态记录模态框 -->
+<div class="modal fade" id="statusRecordsModal" tabindex="-1" aria-labelledby="statusRecordsModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header bg-primary text-white">
+                <h5 class="modal-title" id="statusRecordsModalLabel">打卡记录详情</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h6 id="modalStatusTitle" class="mb-0"></h6>
+                    <span class="badge bg-secondary fs-6" id="modalRecordCount">0 条记录</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="table table-sm table-hover">
+                        <thead class="table-light">
+                            <tr>
+                                <th>姓名</th>
+                                <th>上午上班</th>
+                                <th>上午下班</th>
+                                <th>下午上班</th>
+                                <th>下午下班</th>
+                                <th>状态</th>
+                                <th>工作时长</th>
+                            </tr>
+                        </thead>
+                        <tbody id="modalRecordsBody">
+                            <!-- 记录将通过JavaScript动态加载 -->
+                        </tbody>
+                    </table>
+                </div>
+                <div id="modalNoRecords" class="text-center py-4" style="display: none;">
+                    <i class="fas fa-inbox fa-2x text-muted mb-2"></i>
+                    <p class="text-muted">暂无记录</p>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">关闭</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 确认删除模态框 -->
+<div class="modal fade" id="deleteConfirmModal" tabindex="-1" aria-labelledby="deleteConfirmModalLabel" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-warning text-dark">
+                <h5 class="modal-title" id="deleteConfirmModalLabel">
+                    <i class="fas fa-exclamation-triangle me-2"></i>确认删除
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="fs-5">确定要删除 <span id="deleteRecordName" class="fw-bold text-danger"></span> 在 <span id="deleteRecordDate" class="fw-bold text-danger"></span> 的打卡记录吗？</p>
+                <p class="text-muted">此操作不可恢复，请谨慎操作！</p>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">
+                    <i class="fas fa-times me-1"></i>取消
+                </button>
+                <button type="button" class="btn btn-danger" id="confirmDeleteBtn">
+                    <i class="fas fa-trash me-1"></i>确认删除
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- 加载提示 -->
+<div id="loadingOverlay" class="loading-overlay" style="display: none;">
+    <div class="loading-content">
+        <i class="fas fa-spinner fa-spin fa-3x mb-3"></i>
+        <div id="loadingMessage" class="fs-4 fw-semibold">处理中...</div>
+    </div>
+</div>
+
+<style>
+/* 自定义样式 */
+.time-input {
+    cursor: pointer;
+    transition: all 0.3s ease;
+    background: #f8f9fa;
+    border: 2px solid #e9ecef !important;
+}
+
+.time-input:hover {
+    background: #e3f2fd;
+    border-color: #2196f3 !important;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(33, 150, 243, 0.2);
+}
+
+.time-value {
+    color: #1976d2;
+    transition: all 0.3s ease;
+}
+
+.time-edit {
+    border: none;
+    background: transparent;
+    font-weight: bold;
+    font-size: 1.5rem;
+    text-align: center;
+}
+
+.loading-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.8);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    z-index: 9999;
+}
+
+.loading-content {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    padding: 50px;
+    border-radius: 20px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+    min-width: 300px;
+    color: white;
+}
+
+.loading-content i {
+    color: white;
+}
+
+.status-badge {
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    border: 2px solid transparent;
+}
+
+.status-normal {
+    background: #e8f5e8;
+    color: #2e7d32;
+    border-color: #4caf50;
+}
+
+.status-late {
+    background: #fff8e1;
+    color: #f57c00;
+    border-color: #ff9800;
+}
+
+.status-early {
+    background: #ffebee;
+    color: #c62828;
+    border-color: #f44336;
+}
+
+.status-absent {
+    background: #f5f5f5;
+    color: #616161;
+    border-color: #9e9e9e;
+}
+
+.status-partial {
+    background: #e3f2fd;
+    color: #1565c0;
+    border-color: #2196f3;
+}
+
+.card {
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    border: none;
+    border-radius: 15px;
+    margin-bottom: 20px;
+}
+
+.card-header {
+    border-radius: 15px 15px 0 0 !important;
+    border: none;
+    padding: 20px;
+}
+
+.card-body {
+    padding: 30px;
+}
+
+.btn {
+    border-radius: 10px;
+    transition: all 0.3s ease;
+    font-weight: 600;
+}
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.time-setting-card {
+    transition: all 0.3s ease;
+    border: 2px solid transparent;
+}
+
+.time-setting-card:hover {
+    border-color: #2196f3;
+    transform: translateY(-2px);
+}
+
+.stat-card {
+    cursor: pointer;
+    transition: all 0.3s ease;
+}
+
+.stat-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+    background: #ffffff !important;
+}
+
+.table th {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    font-weight: 600;
+    border: none;
+}
+
+.table td {
+    padding: 15px;
+    vertical-align: middle;
+    border-bottom: 1px solid #e9ecef;
+}
+
+.table tbody tr:hover {
+    background-color: #f8f9fa;
+    transform: scale(1.01);
+    transition: all 0.2s ease;
+}
+
+.badge {
+    border-radius: 10px;
+    padding: 10px 20px;
+    font-size: 1rem;
+}
+
+/* 人脸识别状态样式 */
+.recognition-status {
+    background: #f8f9fa;
+    border-radius: 10px;
+}
+
+.recognition-results {
+    max-height: 200px;
+    overflow-y: auto;
+}
+
+.recognition-names {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.recognition-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 15px;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+    transition: all 0.3s ease;
+}
+
+.recognition-item:hover {
+    background: #f8f9fa;
+    transform: translateX(5px);
+}
+
+.recognition-name {
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.recognition-confidence {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+
+.recognition-time {
+    font-size: 0.75rem;
+    color: #adb5bd;
+}
+
+/* 识别状态指示器 */
+.recognition-indicator {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    margin-right: 8px;
+}
+
+.recognition-running {
+    background-color: #28a745;
+    box-shadow: 0 0 10px rgba(40, 167, 69, 0.5);
+}
+
+.recognition-stopped {
+    background-color: #dc3545;
+}
+
+.recognition-unknown {
+    background-color: #6c757d;
+}
+
+/* 下拉框样式优化 */
+.status-select {
+    min-width: 120px;
+    border-radius: 8px;
+    border: 2px solid #e9ecef;
+    transition: all 0.3s ease;
+    font-weight: 500;
+    padding: 8px 12px;
+    cursor: pointer;
+}
+
+.status-select:focus {
+    border-color: #2196f3;
+    box-shadow: 0 0 0 0.2rem rgba(33, 150, 243, 0.25);
+    outline: none;
+}
+
+.status-select:hover {
+    border-color: #adb5bd;
+}
+
+/* 不同状态的样式 */
+.status-select.normal {
+    border-color: #28a745;
+    background-color: rgba(40, 167, 69, 0.1);
+}
+
+.status-select.late {
+    border-color: #ffc107;
+    background-color: rgba(255, 193, 7, 0.1);
+}
+
+.status-select.early {
+    border-color: #dc3545;
+    background-color: rgba(220, 53, 69, 0.1);
+}
+
+.status-select.absent {
+    border-color: #6c757d;
+    background-color: rgba(108, 117, 125, 0.1);
+}
+
+.status-select.late-early {
+    border-color: #fd7e14;
+    background-color: rgba(253, 126, 20, 0.1);
+}
+
+.status-select.partial {
+    border-color: #2196f3;
+    background-color: rgba(33, 150, 243, 0.1);
+}
+
+/* 删除按钮样式 */
+.btn-delete {
+    background: linear-gradient(135deg, #ff6b6b, #ee5a52);
+    border: none;
+    color: white;
+    padding: 8px 16px;
+    border-radius: 8px;
+    transition: all 0.3s ease;
+    font-weight: 500;
+}
+
+.btn-delete:hover {
+    background: linear-gradient(135deg, #ff5252, #d32f2f);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(255, 82, 82, 0.3);
+    color: white;
+}
+
+.btn-delete:active {
+    transform: translateY(0);
+}
+
+/* 按钮状态样式 */
+.btn-success:disabled {
+    background-color: #28a745;
+    border-color: #28a745;
+    opacity: 0.6;
+}
+
+.btn-danger:disabled {
+    background-color: #dc3545;
+    border-color: #dc3545;
+    opacity: 0.6;
+}
+
+/* 日期选择器样式 */
+.date-selector {
+    background: #f8f9fa;
+    padding: 15px;
+    border-radius: 10px;
+    border: 2px solid #e9ecef;
+}
+
+.date-selector .input-group {
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.date-selector .form-control {
+    border-right: none;
+}
+
+.date-selector .btn {
+    border-radius: 0;
+}
+
+.date-selector .btn:last-child {
+    border-top-right-radius: 6px;
+    border-bottom-right-radius: 6px;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .card-body {
+        padding: 20px;
+    }
+
+    .btn-lg {
+        padding: 10px 20px;
+        font-size: 14px;
+    }
+
+    .time-value {
+        font-size: 1.2rem;
+    }
+
+    .status-select {
+        min-width: 100px;
+        font-size: 14px;
+        padding: 6px 10px;
+    }
+
+    .btn-delete {
+        padding: 6px 12px;
+        font-size: 12px;
+    }
+
+    .recognition-item {
+        padding: 8px 12px;
+        font-size: 14px;
+    }
+
+    .date-selector .input-group {
+        flex-direction: column;
+    }
+
+    .date-selector .btn {
+        border-radius: 6px;
+        margin-top: 5px;
+    }
+}
+</style>
+
+<script>
+// 全局变量
+let attendanceSystemEnabled = false;
+let morningStartTime = '09:00';
+let morningEndTime = '12:00';
+let afternoonStartTime = '13:00';
+let afternoonEndTime = '18:00';
+let currentDeleteRecord = null;
+let recognitionStatus = 'unknown';
+let currentRecognitions = [];
+let currentDateFilter = ''; // 当前日期筛选
+
+// 页面加载完成后初始化
+document.addEventListener('DOMContentLoaded', function() {
+    loadSystemSettings();
+    loadAttendanceRecords();
+    startAutoRefresh();
+
+    // 绑定确认删除按钮事件
+    document.getElementById('confirmDeleteBtn').addEventListener('click', confirmDeleteRecord);
+
+    // 设置日期选择器默认值为今天
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').value = today;
+});
+
+// 应用日期筛选
+function applyDateFilter() {
+    const dateInput = document.getElementById('dateFilter');
+    currentDateFilter = dateInput.value;
+
+    if (currentDateFilter) {
+        document.getElementById('currentDateDisplay').textContent = `当前显示: ${currentDateFilter} 的记录`;
+        loadAttendanceRecords();
+    } else {
+        clearDateFilter();
+    }
+}
+
+// 清除日期筛选
+function clearDateFilter() {
+    currentDateFilter = '';
+    const today = new Date().toISOString().split('T')[0];
+    document.getElementById('dateFilter').value = today;
+    document.getElementById('currentDateDisplay').textContent = '当前显示: 今日记录';
+    loadAttendanceRecords();
+}
+
+// 加载系统设置
+function loadSystemSettings() {
+    fetch('/api/attendance/settings')
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                attendanceSystemEnabled = data.settings.enabled;
+                morningStartTime = data.settings.morning_start_time;
+                morningEndTime = data.settings.morning_end_time;
+                afternoonStartTime = data.settings.afternoon_start_time;
+                afternoonEndTime = data.settings.afternoon_end_time;
+
+                // 更新UI
+                updateSystemStatusUI();
+                document.getElementById('morningStartTime').textContent = morningStartTime;
+                document.getElementById('morningEndTime').textContent = morningEndTime;
+                document.getElementById('afternoonStartTime').textContent = afternoonStartTime;
+                document.getElementById('afternoonEndTime').textContent = afternoonEndTime;
+            }
+        })
+        .catch(error => {
+            console.error('加载系统设置失败:', error);
+        });
+
+    // 加载系统统计信息
+    loadSystemStats();
+}
+
+// 加载系统统计信息
+function loadSystemStats() {
+    fetch('/api/stats')
+        .then(response => response.json())
+        .then(data => {
+            if (data.recognition_status) {
+                recognitionStatus = data.recognition_status;
+                currentRecognitions = data.current_recognitions || [];
+                updateRecognitionStatusUI();
+            }
+        })
+        .catch(error => {
+            console.error('加载系统统计信息失败:', error);
+        });
+}
+
+// 更新系统状态UI
+function updateSystemStatusUI() {
+    const startBtn = document.getElementById('startAttendanceBtn');
+    const stopBtn = document.getElementById('stopAttendanceBtn');
+    const statusElement = document.getElementById('attendanceStatus');
+
+    if (attendanceSystemEnabled) {
+        startBtn.disabled = true;
+        stopBtn.disabled = false;
+        statusElement.textContent = '系统运行中';
+        statusElement.className = 'badge bg-success fs-6 p-2';
+    } else {
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        statusElement.textContent = '系统已关闭';
+        statusElement.className = 'badge bg-secondary fs-6 p-2';
+    }
+}
+
+// 更新人脸识别状态UI
+function updateRecognitionStatusUI() {
+    const statusElement = document.getElementById('recognitionStatus');
+    const countElement = document.getElementById('recognitionCount');
+    const namesContainer = document.getElementById('recognitionNames');
+
+    // 更新识别状态
+    let statusText = '未知';
+    let statusClass = 'bg-secondary';
+    let indicatorClass = 'recognition-unknown';
+
+    switch(recognitionStatus) {
+        case 'running':
+            statusText = '运行中';
+            statusClass = 'bg-success';
+            indicatorClass = 'recognition-running';
+            break;
+        case 'stopped':
+            statusText = '已停止';
+            statusClass = 'bg-danger';
+            indicatorClass = 'recognition-stopped';
+            break;
+    }
+
+    statusElement.innerHTML = `<span class="recognition-indicator ${indicatorClass}"></span>${statusText}`;
+    statusElement.className = `badge ${statusClass} fs-6`;
+
+    // 更新识别结果
+    if (currentRecognitions && currentRecognitions.length > 0) {
+        countElement.textContent = `${currentRecognitions.length} 人`;
+
+        let html = '';
+        currentRecognitions.forEach(recognition => {
+            html += `
+                <div class="recognition-item">
+                    <div>
+                        <div class="recognition-name">${recognition.name}</div>
+                        <div class="recognition-time">${recognition.time}</div>
+                    </div>
+                    <div class="recognition-confidence">${recognition.confidence}%</div>
+                </div>
+            `;
+        });
+        namesContainer.innerHTML = html;
+    } else {
+        countElement.textContent = '0 人';
+        namesContainer.innerHTML = `
+            <div class="text-center text-muted py-2">
+                <i class="fas fa-user fa-lg me-2"></i>
+                <span>暂无识别记录</span>
+            </div>
+        `;
+    }
+}
+
+// 切换打卡系统
+function toggleAttendanceSystem(enabled) {
+    showLoading(enabled ? '正在开启打卡系统...' : '正在关闭打卡系统...');
+
+    fetch('/api/attendance/toggle', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ enabled: enabled })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+        if (data.status === 'success') {
+            attendanceSystemEnabled = enabled;
+            updateSystemStatusUI();
+            showAlert('success', data.message);
+
+            // 重新加载统计信息以更新识别状态
+            loadSystemStats();
+
+            // 如果开启系统，自动刷新记录
+            if (enabled) {
+                setTimeout(() => {
+                    loadAttendanceRecords();
+                }, 1000);
+            }
+        } else {
+            showAlert('danger', '操作失败: ' + data.message);
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        showAlert('danger', '操作失败: ' + error);
+    });
+}
+
+// 开始编辑时间
+function startEditTime(element, timeType) {
+    const timeValue = element.querySelector('.time-value');
+    const timeEdit = element.querySelector('.time-edit');
+    const currentTime = timeValue.textContent;
+
+    timeValue.style.display = 'none';
+    timeEdit.style.display = 'block';
+    timeEdit.value = currentTime;
+    timeEdit.focus();
+    timeEdit.select();
+}
+
+// 保存时间
+function saveTime(input, timeType) {
+    const newTime = input.value;
+    const timeValue = input.parentElement.querySelector('.time-value');
+
+    if (newTime && validateTime(newTime)) {
+        showLoading('正在保存时间设置...');
+
+        fetch('/api/attendance/update_time', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                time_type: timeType,
+                time_value: newTime
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            hideLoading();
+            if (data.status === 'success') {
+                timeValue.textContent = newTime;
+                // 更新对应的全局变量
+                if (timeType === 'morning_start') {
+                    morningStartTime = newTime;
+                } else if (timeType === 'morning_end') {
+                    morningEndTime = newTime;
+                } else if (timeType === 'afternoon_start') {
+                    afternoonStartTime = newTime;
+                } else if (timeType === 'afternoon_end') {
+                    afternoonEndTime = newTime;
+                }
+                showAlert('success', data.message);
+            } else {
+                showAlert('danger', '保存失败: ' + data.message);
+            }
+        })
+        .catch(error => {
+            hideLoading();
+            showAlert('danger', '保存失败: ' + error);
+        });
+    }
+
+    // 恢复显示
+    input.style.display = 'none';
+    timeValue.style.display = 'inline';
+}
+
+// 处理时间输入键盘事件
+function handleTimeKeyPress(event, input, timeType) {
+    if (event.key === 'Enter') {
+        saveTime(input, timeType);
+    } else if (event.key === 'Escape') {
+        const timeValue = input.parentElement.querySelector('.time-value');
+        input.style.display = 'none';
+        timeValue.style.display = 'inline';
+    }
+}
+
+// 验证时间格式
+function validateTime(time) {
+    const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    return timeRegex.test(time);
+}
+
+// 加载打卡记录 - 支持日期筛选
+function loadAttendanceRecords() {
+    showLoading('正在加载打卡记录...');
+
+    let url = '/api/attendance/records';
+    if (currentDateFilter) {
+        url += `?date=${currentDateFilter}`;
+    }
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            hideLoading();
+            if (data.status === 'success') {
+                updateAttendanceTable(data.records);
+                updateTodayStats(data.today_stats);
+            } else {
+                showAlert('danger', '加载记录失败: ' + data.message);
+            }
+        })
+        .catch(error => {
+            hideLoading();
+            showAlert('danger', '加载记录失败: ' + error);
+        });
+}
+
+// 更新打卡表格 - 四个时间段版本
+function updateAttendanceTable(records) {
+    const tbody = document.getElementById('attendanceRecords');
+    console.log('🔄 更新表格，记录数量:', records.length);
+
+    if (records.length === 0) {
+        tbody.innerHTML = `
+            <tr>
+                <td colspan="9" class="text-center text-muted py-5">
+                    <i class="fas fa-inbox fa-3x mb-3 opacity-50"></i><br>
+                    <span class="fs-5">暂无打卡记录</span><br>
+                    <small class="text-muted">开启打卡系统后，识别到的人脸将自动记录为打卡</small>
+                </td>
+            </tr>
+        `;
+        return;
+    }
+
+    let html = '';
+    records.forEach((record, index) => {
+        const workDuration = record.work_duration || '--';
+        const currentStatus = record.status || '缺勤';
+        const statusClass = getStatusSelectClass(currentStatus);
+
+        console.log(`📝 记录 ${index}:`, record.name, record.date, '状态:', currentStatus);
+
+        html += `
+            <tr data-name="${record.name}" data-date="${record.date}">
+                <td class="fw-bold">${record.name}</td>
+                <td>${record.date}</td>
+                <td class="fw-semibold ${record.morning_check_in ? 'text-success' : 'text-muted'}">${record.morning_check_in || '--'}</td>
+                <td class="fw-semibold ${record.morning_check_out ? 'text-info' : 'text-muted'}">${record.morning_check_out || '--'}</td>
+                <td class="fw-semibold ${record.afternoon_check_in ? 'text-success' : 'text-muted'}">${record.afternoon_check_in || '--'}</td>
+                <td class="fw-semibold ${record.afternoon_check_out ? 'text-info' : 'text-muted'}">${record.afternoon_check_out || '--'}</td>
+                <td>
+                    <select class="status-select ${statusClass}"
+                            data-name="${record.name}"
+                            data-date="${record.date}"
+                            onchange="updateRecordStatus(this)">
+                        <option value="正常" ${currentStatus === '正常' ? 'selected' : ''}>正常</option>
+                        <option value="迟到" ${currentStatus === '迟到' ? 'selected' : ''}>迟到</option>
+                        <option value="早退" ${currentStatus === '早退' ? 'selected' : ''}>早退</option>
+                        <option value="缺勤" ${currentStatus === '缺勤' ? 'selected' : ''}>缺勤</option>
+                        <option value="迟到早退" ${currentStatus === '迟到早退' ? 'selected' : ''}>迟到早退</option>
+                        <option value="部分打卡" ${currentStatus === '部分打卡' ? 'selected' : ''}>部分打卡</option>
+                    </select>
+                </td>
+                <td class="fw-semibold">${workDuration}</td>
+                <td>
+                    <button class="btn btn-delete"
+                            onclick="showDeleteConfirm('${record.name}', '${record.date}')"
+                            title="删除记录">
+                        <i class="fas fa-trash me-1"></i>删除
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+
+    tbody.innerHTML = html;
+    console.log('✅ 表格更新完成');
+}
+
+// 获取状态下拉框的样式类
+function getStatusSelectClass(status) {
+    switch(status) {
+        case '正常': return 'normal';
+        case '迟到': return 'late';
+        case '早退': return 'early';
+        case '缺勤': return 'absent';
+        case '迟到早退': return 'late-early';
+        case '部分打卡': return 'partial';
+        default: return '';
+    }
+}
+
+// 显示删除确认对话框
+function showDeleteConfirm(name, date) {
+    currentDeleteRecord = { name, date };
+
+    // 更新确认对话框内容
+    document.getElementById('deleteRecordName').textContent = name;
+    document.getElementById('deleteRecordDate').textContent = date;
+
+    // 显示确认对话框
+    const deleteModal = new bootstrap.Modal(document.getElementById('deleteConfirmModal'));
+    deleteModal.show();
+}
+
+// 确认删除记录
+function confirmDeleteRecord() {
+    if (!currentDeleteRecord) return;
+
+    const { name, date } = currentDeleteRecord;
+
+    showLoading('正在删除记录...');
+
+    fetch('/api/attendance/delete', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            name: name,
+            date: date
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        hideLoading();
+
+        // 关闭确认对话框
+        const deleteModal = bootstrap.Modal.getInstance(document.getElementById('deleteConfirmModal'));
+        deleteModal.hide();
+
+        if (data.status === 'success') {
+            showAlert('success', data.message);
+            console.log('✅ 记录删除成功');
+
+            // 重新加载记录
+            loadAttendanceRecords();
+
+        } else {
+            showAlert('danger', '删除失败: ' + data.message);
+            console.log('❌ 记录删除失败:', data.message);
+        }
+
+        // 重置当前删除记录
+        currentDeleteRecord = null;
+    })
+    .catch(error => {
+        hideLoading();
+
+        // 关闭确认对话框
+        const deleteModal = bootstrap.Modal.getInstance(document.getElementById('deleteConfirmModal'));
+        deleteModal.hide();
+
+        console.error('💥 删除请求错误:', error);
+        showAlert('danger', '网络错误: ' + error.message);
+
+        // 重置当前删除记录
+        currentDeleteRecord = null;
+    });
+}
+
+// 更新记录状态 - 完整修复版本
+function updateRecordStatus(selectElement) {
+    const name = selectElement.getAttribute('data-name');
+    const date = selectElement.getAttribute('data-date');
+    const newStatus = selectElement.value;
+
+    console.log('🚀 开始更新状态:', { name, date, newStatus });
+
+    // 立即视觉反馈 - 更新下拉框样式
+    const statusClass = getStatusSelectClass(newStatus);
+    selectElement.className = `status-select ${statusClass}`;
+
+    showLoading('正在更新状态...');
+
+    // 发送更新请求
+    fetch('/api/attendance/update_status', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+            name: name,
+            date: date,
+            status: newStatus
+        })
+    })
+    .then(response => {
+        console.log('📨 收到响应:', response.status, response.statusText);
+        if (!response.ok) {
+            throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        return response.json();
+    })
+    .then(data => {
+        console.log('📊 响应数据:', data);
+        hideLoading();
+
+        if (data.status === 'success') {
+            showAlert('success', data.message);
+            console.log('✅ 状态更新成功');
+
+            // 刷新统计信息
+            loadTodayStatsOnly();
+
+        } else {
+            showAlert('danger', '更新失败: ' + data.message);
+            console.log('❌ 状态更新失败:', data.message);
+
+            // 恢复原始选择 - 重新加载整个表格
+            loadAttendanceRecords();
+        }
+    })
+    .catch(error => {
+        hideLoading();
+        console.error('💥 请求错误:', error);
+        showAlert('danger', '网络错误: ' + error.message);
+
+        // 恢复原始选择 - 重新加载整个表格
+        loadAttendanceRecords();
+    });
+}
+
+// 只加载今日统计信息
+function loadTodayStatsOnly() {
+    let url = '/api/attendance/records';
+    if (currentDateFilter) {
+        url += `?date=${currentDateFilter}`;
+    }
+
+    fetch(url)
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                updateTodayStats(data.today_stats);
+            }
+        })
+        .catch(error => {
+            console.error('加载统计信息失败:', error);
+        });
+}
+
+// 更新今日统计
+function updateTodayStats(stats) {
+    console.log('更新今日统计:', stats);
+
+    // 确保元素存在
+    const todayCheckins = document.getElementById('todayCheckins');
+    const onTimeCount = document.getElementById('onTimeCount');
+    const lateCount = document.getElementById('lateCount');
+    const earlyLeaveCount = document.getElementById('earlyLeaveCount');
+
+    if (todayCheckins) todayCheckins.textContent = stats.today_checkins || 0;
+    if (onTimeCount) onTimeCount.textContent = stats.on_time || 0;
+    if (lateCount) lateCount.textContent = stats.late || 0;
+    if (earlyLeaveCount) earlyLeaveCount.textContent = stats.early_leave || 0;
+}
+
+// 显示特定状态的记录 - 支持日期筛选
+function showStatusRecords(status) {
+    const date = currentDateFilter || new Date().toISOString().split('T')[0];
+
+    console.log(`请求状态记录: ${status}, 日期: ${date}`);
+    showLoading('正在加载记录...');
+
+    let url = '/api/attendance/status_records';
+    let params = new URLSearchParams({
+        status: status,
+        date: date
+    });
+
+    fetch(`${url}?${params}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            hideLoading();
+            console.log('API响应:', data);
+            if (data.status === 'success') {
+                showStatusModal(data.records, status, data.count);
+            } else {
+                showAlert('danger', '加载记录失败: ' + (data.message || '未知错误'));
+            }
+        })
+        .catch(error => {
+            hideLoading();
+            console.error('API请求错误:', error);
+            showAlert('danger', '加载记录失败: ' + (error.message || '网络错误'));
+        });
+}
+
+// 显示状态记录模态框
+function showStatusModal(records, status, count) {
+    const modalElement = document.getElementById('statusRecordsModal');
+    if (!modalElement) {
+        console.error('找不到模态框元素');
+        return;
+    }
+
+    const modal = new bootstrap.Modal(modalElement);
+    const modalTitle = document.getElementById('modalStatusTitle');
+    const recordCount = document.getElementById('modalRecordCount');
+    const recordsBody = document.getElementById('modalRecordsBody');
+    const noRecords = document.getElementById('modalNoRecords');
+
+    if (!modalTitle || !recordCount || !recordsBody || !noRecords) {
+        console.error('找不到模态框子元素');
+        return;
+    }
+
+    // 设置模态框标题
+    let statusText = '';
+    switch(status) {
+        case 'all': statusText = '所有打卡记录'; break;
+        case '正常': statusText = '准时人员名单'; break;
+        case '迟到': statusText = '迟到人员名单'; break;
+        case '早退': statusText = '早退人员名单'; break;
+        case '部分打卡': statusText = '部分打卡人员名单'; break;
+        default: statusText = `${status}人员名单`;
+    }
+
+    modalTitle.textContent = statusText;
+    recordCount.textContent = `${count} 条记录`;
+
+    // 更新记录表格
+    if (!records || records.length === 0) {
+        recordsBody.style.display = 'none';
+        noRecords.style.display = 'block';
+    } else {
+        noRecords.style.display = 'none';
+        recordsBody.style.display = 'table-row-group';
+
+        let html = '';
+        records.forEach(record => {
+            const statusClass = getStatusClass(record.status);
+            const workDuration = record.work_duration || '--';
+
+            html += `
+                <tr>
+                    <td class="fw-bold">${record.name || '未知'}</td>
+                    <td>${record.morning_check_in || '--'}</td>
+                    <td>${record.morning_check_out || '--'}</td>
+                    <td>${record.afternoon_check_in || '--'}</td>
+                    <td>${record.afternoon_check_out || '--'}</td>
+                    <td><span class="status-badge ${statusClass}">${record.status || '未知'}</span></td>
+                    <td>${workDuration}</td>
+                </tr>
+            `;
+        });
+
+        recordsBody.innerHTML = html;
+    }
+
+    modal.show();
+}
+
+// 获取状态对应的CSS类
+function getStatusClass(status) {
+    switch(status) {
+        case '正常': return 'status-normal';
+        case '迟到': return 'status-late';
+        case '早退': return 'status-early';
+        case '缺勤': return 'status-absent';
+        case '迟到早退': return 'status-late';
+        case '部分打卡': return 'status-partial';
+        default: return 'status-absent';
+    }
+}
+
+// 导出Excel - 支持日期筛选
+function exportToExcel() {
+    showLoading('正在生成Excel文件...');
+
+    let url = '/api/attendance/export';
+    if (currentDateFilter) {
+        url += `?date=${currentDateFilter}`;
+    }
+
+    // 添加时间戳避免缓存
+    const timestamp = new Date().getTime();
+    url += url.includes('?') ? `&t=${timestamp}` : `?t=${timestamp}`;
+
+    fetch(url)
+        .then(response => {
+            if (!response.ok) {
+                // 如果是JSON错误响应，解析错误信息
+                if (response.headers.get('content-type')?.includes('application/json')) {
+                    return response.json().then(errorData => {
+                        throw new Error(errorData.message || '导出失败');
+                    });
+                }
+                throw new Error(`导出失败: ${response.status} ${response.statusText}`);
+            }
+            return response.blob();
+        })
+        .then(blob => {
+            hideLoading();
+
+            // 检查blob是否有效
+            if (!blob || blob.size === 0) {
+                throw new Error('生成的文件为空');
+            }
+
+            // 创建下载链接
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+
+            // 生成文件名
+            let filename;
+            if (currentDateFilter) {
+                filename = `attendance_records_${currentDateFilter}.xlsx`;
+            } else {
+                const today = new Date().toISOString().split('T')[0];
+                filename = `attendance_records_${today}.xlsx`;
+            }
+
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+
+            showAlert('success', 'Excel文件导出成功！');
+        })
+        .catch(error => {
+            hideLoading();
+            console.error('导出错误:', error);
+            showAlert('danger', '导出失败: ' + error.message);
+        });
+}
+
+// 自动刷新
+function startAutoRefresh() {
+    // 每30秒刷新一次统计数据
+    setInterval(() => {
+        if (attendanceSystemEnabled) {
+            loadAttendanceRecords();
+            loadSystemStats(); // 同时刷新识别状态
+        } else {
+            loadSystemStats(); // 即使打卡关闭也刷新识别状态
+        }
+    }, 30000);
+}
+
+// 显示提示消息
+function showAlert(type, message) {
+    // 移除现有的提示
+    const existingAlert = document.querySelector('.alert');
+    if (existingAlert) {
+        existingAlert.remove();
+    }
+
+    const alert = document.createElement('div');
+    alert.className = `alert alert-${type} alert-dismissible fade show`;
+    alert.style.cssText = 'position: fixed; top: 20px; right: 20px; z-index: 1000; min-width: 300px; box-shadow: 0 4px 6px rgba(0,0,0,0.1);';
+
+    let icon = 'fa-info-circle';
+    if (type === 'success') icon = 'fa-check-circle';
+    if (type === 'danger') icon = 'fa-exclamation-triangle';
+    if (type === 'warning') icon = 'fa-exclamation-circle';
+
+    alert.innerHTML = `
+        <div class="d-flex align-items-center">
+            <i class="fas ${icon} me-2"></i>
+            <div>${message}</div>
+            <button type="button" class="btn-close ms-auto" data-bs-dismiss="alert"></button>
+        </div>
+    `;
+
+    document.body.appendChild(alert);
+
+    // 3秒后自动消失
+    setTimeout(() => {
+        if (alert.parentNode) {
+            alert.remove();
+        }
+    }, 3000);
+}
+
+// 显示加载提示
+function showLoading(message) {
+    const overlay = document.getElementById('loadingOverlay');
+    const messageElement = document.getElementById('loadingMessage');
+
+    if (message) {
+        messageElement.textContent = message;
+    }
+    overlay.style.display = 'flex';
+}
+
+// 隐藏加载提示
+function hideLoading() {
+    const overlay = document.getElementById('loadingOverlay');
+    overlay.style.display = 'none';
+}
+</script>
+{% endblock %}

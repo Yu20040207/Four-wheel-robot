@@ -1,0 +1,79 @@
+# openmv_basic.py - 基础版本
+import sensor
+import network
+import time
+from mqtt import MQTTClient
+import ujson
+import gc
+
+# 配置
+SSID = "MTCPC"
+KEY = "mt12345mt"
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+
+# 初始化摄像头
+sensor.reset()
+sensor.set_pixformat(sensor.RGB565)
+sensor.set_framesize(sensor.QQVGA)
+sensor.skip_frames(30)
+print("摄像头初始化完成")
+
+# 连接WiFi
+print("连接WiFi...")
+wlan = network.WLAN(network.STA_IF)
+wlan.active(True)
+
+# 确保SSID和KEY是字符串
+ssid = str(SSID)
+key = str(KEY)
+
+# 连接WiFi
+wlan.connect(ssid, key)
+
+# 等待连接
+timeout = 20
+while not wlan.isconnected() and timeout > 0:
+    time.sleep_ms(500)
+    timeout -= 1
+    print(".", end="")
+
+if wlan.isconnected():
+    print("\nWiFi连接成功!")
+    print("IP:", wlan.ifconfig()[0])
+else:
+    print("\nWiFi连接失败!")
+    raise Exception("无法连接WiFi")
+
+# 连接MQTT
+print("连接EMQX...")
+client = MQTTClient("openmv_basic", EMQX_BROKER, port=EMQX_PORT)
+client.connect()
+print("EMQX连接成功!")
+
+# 主循环
+frame_count = 0
+while True:
+    try:
+        # 捕获图像
+        img = sensor.snapshot()
+        jpeg_data = img.compress(quality=50)
+        
+        # 发送到EMQX
+        message = ujson.dumps({
+            "frame_id": frame_count,
+            "data": jpeg_data.hex()
+        })
+        client.publish("openmv/video/stream", message)
+        
+        frame_count += 1
+        if frame_count % 10 == 0:
+            print("已发送 {} 帧".format(frame_count))
+            
+        time.sleep_ms(200)  # 5 FPS
+        gc.collect()
+        
+    except Exception as e:
+        print("错误:", e)
+        time.sleep_ms(1000)
+        

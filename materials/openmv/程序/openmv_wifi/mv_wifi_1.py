@@ -1,0 +1,743 @@
+# OpenMV HTTP Video Stream Server with MQTT
+import sensor
+import time
+import network
+import socket
+import json
+
+# ===== 配置区域 =====
+SSID = "MTCPC"
+KEY = "mt12345mt"
+HTTP_PORT = 8080
+MQTT_BROKER = "192.168.13.23"
+MQTT_PORT = 1883
+MQTT_CLIENT_ID = "openmv_camera"
+
+# ===== 全局变量 =====
+wlan = None
+server_socket = None
+frame_count = 0
+mqtt_client = None
+
+def init_camera():
+    """初始化摄像头"""
+    sensor.reset()
+    sensor.set_pixformat(sensor.RGB565)
+    sensor.set_framesize(sensor.QVGA)  # 320x240
+    sensor.skip_frames(20)
+    sensor.set_auto_whitebal(False)
+    print("摄像头初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+def connect_wifi_robust():
+    """健壮的WiFi连接函数"""
+    global wlan
+
+    # 使用WINC1500 WiFi模块
+    wlan = network.WINC()
+
+    max_retries = 5
+    for attempt in range(max_retries):
+        print("\n=== WiFi连接尝试 {}/{} ===".format(attempt + 1, max_retries))
+
+        try:
+            # 检查是否已连接
+            if wlan.isconnected():
+                current_ip = wlan.ifconfig()[0]
+                if current_ip != '0.0.0.0':
+                    print("已连接到WiFi")
+                    print("IP地址:", current_ip)
+                    return True
+                else:
+                    print("检测到无效IP，重新连接...")
+                    wlan.disconnect()
+                    time.sleep_ms(2000)
+
+            # 连接WiFi
+            print("连接WiFi: {}...".format(SSID))
+            wlan.connect(SSID, key=KEY, security=wlan.WPA_PSK)
+
+            # 等待连接，最多30秒
+            timeout = 30
+            connected = False
+            while timeout > 0:
+                if wlan.isconnected():
+                    ip_info = wlan.ifconfig()
+                    ip_address = ip_info[0]
+
+                    if ip_address != '0.0.0.0':
+                        print("\n✓ WiFi连接成功!")
+                        print("IP地址:", ip_address)
+                        print("子网掩码:", ip_info[1])
+                        print("网关:", ip_info[2])
+                        print("DNS:", ip_info[3])
+                        return True
+                    else:
+                        print("获取到无效IP，重新连接...")
+                        break
+
+                time.sleep_ms(1000)
+                timeout -= 1
+                if timeout % 5 == 0:
+                    print("等待连接... {}秒".format(timeout))
+
+            print("WiFi连接超时")
+
+        except Exception as e:
+            print("WiFi连接错误:", e)
+
+        # 重试前等待
+        if attempt < max_retries - 1:
+            wait_time = (attempt + 1) * 3
+            print("等待{}秒后重试...".format(wait_time))
+            time.sleep_ms(wait_time * 1000)
+
+    print("✗ 所有WiFi连接尝试失败")
+    return False
+
+def init_mqtt():
+    """初始化MQTT客户端"""
+    global mqtt_client
+
+    try:
+        # 创建MQTT客户端
+        mqtt_client = network.mqtt(MQTT_CLIENT_ID, MQTT_BROKER, port=MQTT_PORT, keepalive=60)
+
+        # 设置回调函数
+        mqtt_client.set_callback(mqtt_callback)
+
+        # 连接MQTT代理
+        print("连接MQTT代理: {}:{}".format(MQTT_BROKER, MQTT_PORT))
+        mqtt_client.connect()
+
+        # 订阅主题
+        mqtt_client.subscribe("openmv/face_id")
+        mqtt_client.subscribe("openmv/command")
+
+        print("✓ MQTT连接成功")
+        return True
+
+    except Exception as e:
+        print("✗ MQTT连接失败:", e)
+        mqtt_client = None
+        return False
+
+def mqtt_callback(topic, msg):
+    """MQTT消息回调函数"""
+    try:
+        topic_str = topic.decode('utf-8') if isinstance(topic, bytes) else str(topic)
+        msg_str = msg.decode('utf-8') if isinstance(msg, bytes) else str(msg)
+
+        print("=" * 50)
+        print("收到MQTT消息")
+        print("主题: {}".format(topic_str))
+        print("内容: {}".format(msg_str))
+        print("=" * 50)
+
+        if "face_id" in topic_str:
+            print("🎯 识别到人脸 ID: {}".format(msg_str))
+            # 这里可以添加根据人脸ID执行相应操作的代码
+
+        elif "command" in topic_str:
+            print("收到命令: {}".format(msg_str))
+            # 处理其他命令
+
+    except Exception as e:
+        print("处理MQTT消息错误:", e)
+
+def check_mqtt_messages():
+    """检查MQTT消息"""
+    global mqtt_client
+    if mqtt_client:
+        try:
+            mqtt_client.check_msg()
+        except Exception as e:
+            print("检查MQTT消息错误:", e)
+            # 尝试重新连接
+            try:
+                mqtt_client.disconnect()
+                time.sleep_ms(1000)
+                init_mqtt()
+            except:
+                mqtt_client = None
+
+def send_http_response(client, code, content_type, content):
+    """发送HTTP响应"""
+    try:
+        response = "HTTP/1.1 {} OK\r\n".format(code)
+        response += "Content-Type: {}\r\n".format(content_type)
+
+        if isinstance(content, str):
+            content = content.encode('utf-8')
+
+        response += "Content-Length: {}\r\n".format(len(content))
+        response += "Connection: close\r\n"
+        response += "\r\n"
+
+        client.send(response.encode('utf-8'))
+        client.send(content)
+        return True
+    except Exception as e:
+        print("发送HTTP响应错误:", e)
+        return False
+
+def send_mjpeg_frame(client, jpeg_data):
+    """发送单个MJPEG帧"""
+    try:
+        frame_header = "--frame\r\n"
+        frame_header += "Content-Type: image/jpeg\r\n"
+        frame_header += "Content-Length: {}\r\n".format(len(jpeg_data))
+        frame_header += "\r\n"
+
+        client.send(frame_header.encode())
+        client.send(jpeg_data)
+        client.send("\r\n".encode())
+        return True
+    except Exception as e:
+        print("发送帧错误:", e)
+        return False
+
+def parse_request(data):
+    """解析HTTP请求"""
+    try:
+        lines = data.decode().split('\r\n')
+        if not lines:
+            return None, None
+
+        first_line = lines[0].split(' ')
+        if len(first_line) < 2:
+            return None, None
+
+        method = first_line[0]
+        path = first_line[1]
+
+        return method, path
+    except Exception as e:
+        print("解析请求错误:", e)
+        return None, None
+
+def handle_root(client, client_ip):
+    """处理根路径请求"""
+    ip_address = wlan.ifconfig()[0]
+
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>OpenMV实时画面</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            text-align: center;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            color: white;
+        }
+        .container {
+            max-width: 400px;
+            margin: 0 auto;
+            background: rgba(255,255,255,0.1);
+            padding: 25px;
+            border-radius: 15px;
+            backdrop-filter: blur(10px);
+            box-shadow: 0 8px 32px rgba(0,0,0,0.1);
+        }
+        .video-container {
+            margin: 20px 0;
+            background: rgba(0,0,0,0.3);
+            padding: 15px;
+            border-radius: 10px;
+            position: relative;
+            width: 320px;
+            height: 240px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+        #videoPlaceholder {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            width: 320px;
+            height: 240px;
+            background: #000;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: #fff;
+            z-index: 1;
+        }
+        #video {
+            position: absolute;
+            top: 15px;
+            left: 15px;
+            width: 320px;
+            height: 240px;
+            border-radius: 8px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.2);
+            background: #000;
+            z-index: 2;
+        }
+        .btn {
+            padding: 12px 25px;
+            margin: 10px;
+            border: none;
+            border-radius: 25px;
+            cursor: pointer;
+            font-size: 16px;
+            background: #4CAF50;
+            color: white;
+            transition: all 0.3s ease;
+        }
+        .btn:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+        .btn:disabled {
+            background: #cccccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+        .status {
+            background: rgba(255,255,255,0.2);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            text-align: center;
+            font-family: 'Courier New', monospace;
+        }
+        .info-box {
+            background: rgba(255,255,255,0.15);
+            padding: 15px;
+            border-radius: 10px;
+            margin: 15px 0;
+        }
+        .connection-status {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+        .status-connecting { background: #ff9800; }
+        .status-connected { background: #4CAF50; }
+        .status-error { background: #f44336; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📹 OpenMV实时画面</h1>
+
+        <div class="info-box">
+            <strong>访问地址:</strong><br>
+            http://""" + ip_address + """:""" + str(HTTP_PORT) + """
+        </div>
+
+        <div class="video-container">
+            <div id="videoPlaceholder">
+                正在加载视频流...
+            </div>
+            <img id="video" class="hidden" alt="视频流">
+        </div>
+
+        <button class="btn" id="refreshBtn" onclick="refreshVideo()">🔄 刷新画面</button>
+        <button class="btn" id="snapshotBtn" onclick="takeSnapshot()">📸 截图</button>
+
+        <div class="status">
+            <div>
+                <span class="connection-status" id="statusIndicator"></span>
+                状态: <span id="statusText">初始化中...</span>
+            </div>
+            <div>时间: <span id="time">--:--:--</span></div>
+            <div>帧率: <span id="fps">--</span> FPS</div>
+            <div>分辨率: 320x240</div>
+        </div>
+    </div>
+
+    <script>
+        let videoElement = document.getElementById('video');
+        let videoPlaceholder = document.getElementById('videoPlaceholder');
+        let statusText = document.getElementById('statusText');
+        let statusIndicator = document.getElementById('statusIndicator');
+        let timeElement = document.getElementById('time');
+        let fpsElement = document.getElementById('fps');
+        let refreshBtn = document.getElementById('refreshBtn');
+        let snapshotBtn = document.getElementById('snapshotBtn');
+
+        let frameCount = 0;
+        let lastFpsUpdate = Date.now();
+        let connectionStartTime = 0;
+        let retryCount = 0;
+        let maxRetries = 3;
+        let isConnected = false;
+
+        function updateStatus(status, type = 'connecting') {
+            statusText.textContent = status;
+            statusIndicator.className = 'connection-status';
+
+            switch(type) {
+                case 'connected':
+                    statusIndicator.classList.add('status-connected');
+                    isConnected = true;
+                    break;
+                case 'error':
+                    statusIndicator.classList.add('status-error');
+                    isConnected = false;
+                    break;
+                default:
+                    statusIndicator.classList.add('status-connecting');
+                    isConnected = false;
+            }
+        }
+
+        function updateTime() {
+            timeElement.textContent = new Date().toLocaleTimeString();
+        }
+
+        function updateFps() {
+            frameCount++;
+            const now = Date.now();
+            if (now - lastFpsUpdate >= 1000) {
+                fpsElement.textContent = frameCount;
+                frameCount = 0;
+                lastFpsUpdate = now;
+            }
+        }
+
+        function setButtonsEnabled(enabled) {
+            refreshBtn.disabled = !enabled;
+            snapshotBtn.disabled = !enabled;
+        }
+
+        function refreshVideo() {
+            retryCount = 0;
+            stopVideoStream();
+            startVideoStream();
+        }
+
+        function stopVideoStream() {
+            videoElement.src = '';
+            videoElement.classList.add('hidden');
+            videoPlaceholder.classList.remove('hidden');
+            updateStatus('正在重新连接...', 'connecting');
+            setButtonsEnabled(false);
+        }
+
+        function takeSnapshot() {
+            if (!isConnected || videoElement.classList.contains('hidden')) {
+                updateStatus('视频未连接，无法截图', 'error');
+                return;
+            }
+
+            try {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                canvas.width = 320;
+                canvas.height = 240;
+
+                ctx.drawImage(videoElement, 0, 0, canvas.width, canvas.height);
+
+                const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+                const data = imageData.data;
+                let isEmpty = true;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    if (data[i] > 10 || data[i + 1] > 10 || data[i + 2] > 10) {
+                        isEmpty = false;
+                        break;
+                    }
+                }
+
+                if (isEmpty) {
+                    updateStatus('截图失败：画面为黑色', 'error');
+                    return;
+                }
+
+                const link = document.createElement('a');
+                link.download = 'openmv-snapshot-' + new Date().getTime() + '.jpg';
+                link.href = canvas.toDataURL('image/jpeg', 0.9);
+                link.click();
+
+                updateStatus('截图已保存', 'connected');
+                setTimeout(() => {
+                    if (isConnected) updateStatus('已连接', 'connected');
+                }, 2000);
+            } catch (error) {
+                updateStatus('截图失败: ' + error.message, 'error');
+            }
+        }
+
+        function startVideoStream() {
+            connectionStartTime = Date.now();
+            retryCount++;
+
+            if (retryCount > maxRetries) {
+                updateStatus('连接失败，请检查服务器', 'error');
+                setButtonsEnabled(true);
+                return;
+            }
+
+            updateStatus(`连接中... (尝试 ${retryCount}/${maxRetries})`, 'connecting');
+            setButtonsEnabled(false);
+
+            const timestamp = new Date().getTime();
+            const random = Math.random().toString(36).substring(7);
+            const videoUrl = `/video?t=${timestamp}&r=${random}&retry=${retryCount}`;
+
+            videoElement.src = videoUrl;
+            videoElement.onload = function() {
+                videoPlaceholder.classList.add('hidden');
+                videoElement.classList.remove('hidden');
+                const connectTime = Date.now() - connectionStartTime;
+                updateStatus(`已连接 (${connectTime}ms)`, 'connected');
+                setButtonsEnabled(true);
+                retryCount = 0;
+            };
+
+            videoElement.onerror = function() {
+                updateStatus(`连接错误 (尝试 ${retryCount}/${maxRetries})`, 'error');
+                videoPlaceholder.classList.remove('hidden');
+                videoElement.classList.add('hidden');
+
+                if (retryCount < maxRetries) {
+                    setTimeout(() => {
+                        if (!isConnected) {
+                            startVideoStream();
+                        }
+                    }, 2000);
+                } else {
+                    setButtonsEnabled(true);
+                }
+            };
+
+            setTimeout(() => {
+                if (!isConnected && statusText.textContent.includes('连接中')) {
+                    console.log('视频流连接超时，重新尝试...');
+                    videoElement.src = '';
+                    startVideoStream();
+                }
+            }, 8000);
+        }
+
+        document.addEventListener('visibilitychange', function() {
+            if (!document.hidden && !isConnected) {
+                refreshVideo();
+            }
+        });
+
+        function init() {
+            updateTime();
+            setInterval(updateTime, 1000);
+            setInterval(updateFps, 100);
+            startVideoStream();
+        }
+
+        window.onload = init;
+    </script>
+</body>
+</html>"""
+
+    send_http_response(client, 200, "text/html", html)
+    print("已发送HTML页面到客户端 {}".format(client_ip))
+
+def handle_favicon(client, client_ip):
+    """处理favicon请求"""
+    print("客户端 {} 请求favicon，返回404".format(client_ip))
+    send_http_response(client, 404, "text/plain", "Not Found")
+
+def handle_video(client, client_ip):
+    """处理视频流请求"""
+    global frame_count
+
+    print("开始视频流传输到客户端: {}".format(client_ip))
+
+    # 发送MJPEG流头
+    try:
+        header = "HTTP/1.1 200 OK\r\n"
+        header += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+        header += "Connection: close\r\n"
+        header += "Cache-Control: no-cache\r\n"
+        header += "Pragma: no-cache\r\n"
+        header += "Access-Control-Allow-Origin: *\r\n"
+        header += "\r\n"
+        client.send(header.encode())
+    except Exception as e:
+        print("发送视频头错误:", e)
+        return
+
+    clock = time.clock()
+    last_status_time = time.ticks_ms()
+    frames_sent = 0
+    first_frame_sent = False
+
+    try:
+        while True:
+            clock.tick()
+
+            # 捕获图像
+            img = sensor.snapshot()
+
+            # 压缩为JPEG
+            jpeg = img.compress(quality=80)
+
+            # 检查JPEG数据是否有效
+            if len(jpeg) < 100:
+                print("警告: JPEG数据过小，可能摄像头有问题")
+                continue
+
+            # 发送帧
+            if send_mjpeg_frame(client, jpeg):
+                frame_count += 1
+                frames_sent += 1
+
+                # 第一帧发送成功后立即打印状态
+                if not first_frame_sent:
+                    print("✓ 第一帧已发送到客户端 {} (大小: {} bytes)".format(client_ip, len(jpeg)))
+                    first_frame_sent = True
+            else:
+                print("发送帧失败，客户端可能已断开")
+                break
+
+            # 每5秒输出一次状态
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_status_time) > 5000:
+                fps = clock.fps()
+                print("客户端 {}: 已发送 {} 帧, {:.1f} FPS, 最近帧大小: {} bytes".format(
+                    client_ip, frames_sent, fps, len(jpeg)))
+                last_status_time = current_time
+
+            # 控制帧率
+            time.sleep_ms(100)
+
+            # 非阻塞检查客户端是否断开
+            try:
+                client.setblocking(False)
+                data = client.recv(1)
+                if not data:
+                    break
+            except:
+                pass
+            finally:
+                client.setblocking(True)
+
+    except Exception as e:
+        print("视频流错误:", e)
+
+    print("客户端 {} 断开，共发送 {} 帧".format(client_ip, frames_sent))
+
+def main():
+    """主函数"""
+    global server_socket, frame_count, mqtt_client
+
+    print("=== OpenMV HTTP视频流服务器 ===")
+    print("WiFi网络: {}".format(SSID))
+    print("HTTP端口: {}".format(HTTP_PORT))
+    print("MQTT代理: {}:{}".format(MQTT_BROKER, MQTT_PORT))
+
+    # 初始化硬件
+    init_camera()
+
+    # 连接WiFi
+    if not connect_wifi_robust():
+        print("无法连接WiFi，程序退出")
+        return
+
+    # 初始化MQTT
+    init_mqtt()
+
+    # 创建服务器socket
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_address = ('0.0.0.0', HTTP_PORT)
+        server_socket.bind(server_address)
+        server_socket.listen(3)
+        server_socket.setblocking(False)
+        print("✓ HTTP服务器启动成功")
+        print("📱 请用浏览器访问: http://{}:{}".format(wlan.ifconfig()[0], HTTP_PORT))
+        print("⏳ 等待客户端连接...")
+    except Exception as e:
+        print("✗ 启动服务器失败:", e)
+        return
+
+    frame_count = 0
+
+    # 主循环
+    while True:
+        try:
+            # 检查MQTT消息
+            check_mqtt_messages()
+
+            # 接受HTTP连接（非阻塞）
+            try:
+                client, addr = server_socket.accept()
+                client_ip = addr[0]
+                print("\n📞 新客户端连接: {}".format(client_ip))
+
+                # 接收请求
+                data = client.recv(1024)
+                if not data:
+                    client.close()
+                    continue
+
+                # 解析请求
+                method, path = parse_request(data)
+                print("请求: {} {}".format(method, path if path else "unknown"))
+
+                if method == "GET":
+                    if path == "/" or path == "/index.html":
+                        handle_root(client, client_ip)
+                    elif path.startswith("/video"):
+                        handle_video(client, client_ip)
+                    elif path == "/favicon.ico":
+                        handle_favicon(client, client_ip)
+                    elif path == "/status":
+                        status_info = "在线|帧数:{}|分辨率:{}x{}".format(
+                            frame_count, sensor.width(), sensor.height()
+                        )
+                        send_http_response(client, 200, "text/plain", status_info)
+                    else:
+                        # 重定向到主页
+                        send_http_response(client, 302, "text/plain", "")
+                        client.send("Location: /\r\n\r\n".encode())
+                else:
+                    send_http_response(client, 405, "text/plain", "Method Not Allowed")
+
+                client.close()
+                print("客户端 {} 断开连接".format(client_ip))
+
+            except OSError:
+                # 没有客户端连接是正常的，继续循环
+                pass
+
+        except Exception as e:
+            print("服务器错误:", e)
+            try:
+                if client:
+                    client.close()
+            except:
+                pass
+            time.sleep_ms(100)
+
+        # 短暂延时，避免过度占用CPU
+        time.sleep_ms(10)
+
+# 启动程序
+try:
+    main()
+except KeyboardInterrupt:
+    print("\n程序被用户中断")
+except Exception as e:
+    print("程序错误:", e)
+finally:
+    if server_socket:
+        server_socket.close()
+    if mqtt_client:
+        try:
+            mqtt_client.disconnect()
+        except:
+            pass
+    print("服务器关闭")

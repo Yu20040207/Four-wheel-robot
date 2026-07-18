@@ -1,0 +1,89 @@
+# Archives & installers (GitHub rejects >100MB)
+*.zip
+*.rar
+*.7z
+*.exe
+*.msi
+*.bin
+*.iso
+
+# Media / large models
+*.mp4
+*.avi
+*.mkv
+*.mp3
+*.wav
+*.dat
+*.weights
+*.onnx
+
+# Build / toolchain outputs
+**/build/
+**/dist/
+**/Debug/
+**/Release/
+**/managed_components/
+**/.pio/
+**/__pycache__/
+**/*.pyc
+**/.venv/
+**/venv/
+**/node_modules/
+**/CMakeFiles/
+**/.pch/
+**/*.gch
+**/sdkconfig.old
+
+# Nested git / IDE / ESP-IDF trees
+**/.git/
+**/.idea/
+**/.vscode/
+**/.vs/
+**/ESPIDF/
+
+# OS junk
+Thumbs.db
+.DS_Store
+~$*
+*.tmp
+*.log
+
+# materials: only upload useful source folders (skip courseware / SDKs)
+materials/*
+!materials/Program_end/
+!materials/Program_end/**
+!materials/PCB/
+!materials/PCB/**
+!materials/openmv/
+!materials/openmv/**
+!materials/MQTT/
+!materials/MQTT/**
+!materials/ESP32-S3/
+!materials/ESP32-S3/**
+!materials/ESP32/
+!materials/ESP32/**
+!materials/*.txt
+!materials/*.xlsx
+
+# Re-apply ignores AFTER whitelist un-ignore (important!)
+materials/**/*.zip
+materials/**/*.rar
+materials/**/*.7z
+materials/**/*.exe
+materials/**/*.bin
+materials/**/*.mp4
+materials/**/build/
+materials/**/dist/
+materials/**/venv/
+materials/**/.venv/
+materials/**/__pycache__/
+materials/ESP32/AI_esp32/
+
+# code root archives
+code/*.zip
+code/*.bin
+code/*.rar
+code/**/build/
+code/**/dist/
+code/**/managed_components/
+code/**/venv/

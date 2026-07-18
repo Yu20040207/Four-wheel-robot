@@ -1,0 +1,18 @@
+2025-09-29 09:33:39,680 - __main__ - INFO - 正在初始化人脸识别服务器...
+2025-09-29 09:33:39,741 - face_detector - INFO - 人脸检测器初始化完成
+2025-09-29 09:33:39,741 - face_recognizer - ERROR - 人脸识别器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:33:39,741 - __main__ - ERROR - 服务器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:33:39,741 - __main__ - ERROR - 服务器运行错误: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:33:39,741 - __main__ - INFO - 服务器已关闭
+2025-09-29 09:34:24,167 - __main__ - INFO - 正在初始化人脸识别服务器...
+2025-09-29 09:34:24,194 - face_detector - INFO - 人脸检测器初始化完成
+2025-09-29 09:34:24,194 - face_recognizer - ERROR - 人脸识别器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:34:24,195 - __main__ - ERROR - 服务器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:34:24,195 - __main__ - ERROR - 服务器运行错误: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:34:24,195 - __main__ - INFO - 服务器已关闭
+2025-09-29 09:35:54,728 - __main__ - INFO - 正在初始化人脸识别服务器...
+2025-09-29 09:35:54,756 - face_detector - INFO - 人脸检测器初始化完成
+2025-09-29 09:35:54,756 - face_recognizer - ERROR - 人脸识别器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:35:54,756 - __main__ - ERROR - 服务器初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:35:54,756 - __main__ - ERROR - 服务器运行错误: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-29 09:35:54,756 - __main__ - INFO - 服务器已关闭

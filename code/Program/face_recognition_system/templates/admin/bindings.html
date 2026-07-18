@@ -1,0 +1,152 @@
+{% extends "admin/base.html" %}
+
+{% block title %}绑定管理{% endblock %}
+
+{% block content %}
+<h4 class="mb-4">用户 ↔ 机器人 绑定</h4>
+
+<div class="card p-4 mb-4">
+    <h5>新建绑定</h5>
+    <div class="row g-2 align-items-end">
+        <div class="col-md-4">
+            <label class="form-label">客户用户</label>
+            <select id="bindUserId" class="form-select">
+                {% for u in users if u.role == 'user' %}
+                <option value="{{ u.id }}">{{ u.username }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <label class="form-label">机器人</label>
+            <select id="bindRobotId" class="form-select">
+                {% for r in robots %}
+                <option value="{{ r.robot_id }}">{{ r.display_name }} ({{ r.robot_id }})</option>
+                {% endfor %}
+            </select>
+        </div>
+        <div class="col-md-4">
+            <button type="button" class="btn btn-primary" id="bindBtn">绑定</button>
+        </div>
+    </div>
+    <div id="bindMsg" class="mt-2 small"></div>
+</div>
+
+<div class="card p-4">
+    <table class="table">
+        <thead><tr><th>用户</th><th>robot_id</th><th>名称</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for b in bindings %}
+            <tr>
+                <td>{{ b.username }}</td>
+                <td><code>{{ b.robot_id }}</code></td>
+                <td>{{ b.display_name }}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary edit-binding"
+                            data-user="{{ b.user_id }}" data-robot="{{ b.robot_id }}">编辑</button>
+                    <button class="btn btn-sm btn-outline-danger unbind-btn"
+                            data-user="{{ b.user_id }}" data-robot="{{ b.robot_id }}">解绑</button>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="4" class="text-muted">暂无绑定</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="modal fade" id="editBindingModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑绑定关系</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="oldUserId">
+                <input type="hidden" id="oldRobotId">
+                <div class="mb-3">
+                    <label class="form-label">客户用户</label>
+                    <select id="editBindUserId" class="form-select">
+                        {% for u in users if u.role == 'user' %}
+                        <option value="{{ u.id }}">{{ u.username }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">机器人</label>
+                    <select id="editBindRobotId" class="form-select">
+                        {% for r in robots %}
+                        <option value="{{ r.robot_id }}">{{ r.display_name }} ({{ r.robot_id }})</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div id="editBindMsg" class="small"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveBindingBtn">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('bindBtn').addEventListener('click', function () {
+    var msg = document.getElementById('bindMsg');
+    fetch('/admin/api/bindings', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            user_id: parseInt(document.getElementById('bindUserId').value, 10),
+            robot_id: document.getElementById('bindRobotId').value
+        })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'mt-2 small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 800);
+    });
+});
+
+document.querySelectorAll('.unbind-btn').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        if (!confirm('确定解绑？')) return;
+        var uid = this.dataset.user;
+        var rid = this.dataset.robot;
+        fetch('/admin/api/bindings/' + uid + '/' + encodeURIComponent(rid), {method: 'DELETE'})
+            .then(function () { location.reload(); });
+    });
+});
+
+var editBindingModal = new bootstrap.Modal(document.getElementById('editBindingModal'));
+document.querySelectorAll('.edit-binding').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        document.getElementById('oldUserId').value = this.dataset.user;
+        document.getElementById('oldRobotId').value = this.dataset.robot;
+        document.getElementById('editBindUserId').value = this.dataset.user;
+        document.getElementById('editBindRobotId').value = this.dataset.robot;
+        document.getElementById('editBindMsg').textContent = '';
+        editBindingModal.show();
+    });
+});
+
+document.getElementById('saveBindingBtn').addEventListener('click', function () {
+    var oldUserId = document.getElementById('oldUserId').value;
+    var oldRobotId = document.getElementById('oldRobotId').value;
+    var msg = document.getElementById('editBindMsg');
+    fetch('/admin/api/bindings/' + oldUserId + '/' + encodeURIComponent(oldRobotId), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            user_id: parseInt(document.getElementById('editBindUserId').value, 10),
+            robot_id: document.getElementById('editBindRobotId').value
+        })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 600);
+    });
+});
+</script>
+{% endblock %}

@@ -1,0 +1,337 @@
+# openmv_emqx_stream.py
+import sensor
+import network
+import time
+from mqtt import MQTTClient
+import ujson
+import gc
+
+# 配置区域
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+CONTROL_TOPIC = "openmv/control"
+RECOGNITION_RESULT_TOPIC = "openmv_recognition_result"
+
+# 视频流配置
+FRAME_SIZE = sensor.QQVGA  # 160x120
+FRAME_QUALITY = 50
+TARGET_FPS = 10
+MAX_FRAME_SIZE = 5000
+
+# 全局变量
+wlan = None
+mqtt_client = None
+frame_count = 0
+is_streaming = True
+latest_recognition_result = None
+last_reconnect_time = 0
+reconnect_interval = 10000  # 10秒重连间隔
+
+def init_camera():
+    """初始化摄像头"""
+    sensor.reset()
+    sensor.set_pixformat(sensor.RGB565)
+    sensor.set_framesize(FRAME_SIZE)
+    sensor.skip_frames(30)
+    sensor.set_auto_whitebal(False)
+    sensor.set_auto_gain(False)
+    sensor.set_auto_exposure(False, exposure_us=8000)
+    print("摄像头初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+def connect_wifi():
+    """连接WiFi - 修复版本"""
+    global wlan
+    
+    # 确保SSID和KEY是字符串类型
+    ssid = str(SSID)
+    key = str(KEY)
+    
+    print("连接WiFi: {}...".format(ssid))
+    
+    # 如果已经连接，先断开
+    if wlan and wlan.isconnected():
+        wlan.disconnect()
+        time.sleep(2)
+    
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    
+    # 尝试连接WiFi
+    try:
+        wlan.connect(ssid, key)
+    except Exception as e:
+        print("WiFi连接异常:", e)
+        return False
+
+    timeout = 30
+    for i in range(timeout):
+        if wlan.isconnected():
+            print("\nWiFi连接成功!")
+            print("IP地址:", wlan.ifconfig()[0])
+            return True
+        time.sleep_ms(500)
+        print(".", end="")
+    
+    print("\nWiFi连接失败! 状态:", wlan.status())
+    return False
+
+def simple_mqtt_callback(topic, msg):
+    """简化的MQTT回调函数 - 只处理关键消息"""
+    global latest_recognition_result
+    
+    try:
+        topic_str = topic.decode('utf-8')
+        
+        if topic_str == RECOGNITION_RESULT_TOPIC:
+            # 只处理识别结果，不处理控制消息以减少复杂性
+            msg_str = msg.decode('utf-8')
+            result_data = ujson.loads(msg_str)
+            latest_recognition_result = result_data
+            print("收到识别结果")
+            
+    except Exception as e:
+        print("处理MQTT消息错误:", e)
+
+def create_mqtt_client():
+    """创建新的MQTT客户端"""
+    global mqtt_client
+    
+    try:
+        # 先断开旧连接
+        if mqtt_client:
+            try:
+                mqtt_client.disconnect()
+            except:
+                pass
+            mqtt_client = None
+        
+        client_id = "openmv_{}".format(time.ticks_ms())
+        
+        print("创建MQTT客户端...")
+        mqtt_client = MQTTClient(
+            client_id,
+            EMQX_BROKER,
+            port=EMQX_PORT,
+            user=EMQX_USERNAME,
+            password=EMQX_PASSWORD,
+            keepalive=30
+        )
+        
+        # 设置简化的回调
+        mqtt_client.set_callback(simple_mqtt_callback)
+        
+        return mqtt_client
+        
+    except Exception as e:
+        print("创建MQTT客户端失败:", e)
+        return None
+
+def connect_emqx():
+    """连接EMQX服务器 - 简化版本"""
+    global mqtt_client, last_reconnect_time
+    
+    current_time = time.ticks_ms()
+    
+    # 检查重连间隔
+    if time.ticks_diff(current_time, last_reconnect_time) < reconnect_interval:
+        return False
+    
+    last_reconnect_time = current_time
+    
+    try:
+        # 创建新客户端
+        client = create_mqtt_client()
+        if not client:
+            return False
+        
+        print("连接EMQX服务器...")
+        client.connect()
+        
+        # 只订阅关键主题
+        client.subscribe(RECOGNITION_RESULT_TOPIC)
+        print("EMQX连接成功! 已订阅:", RECOGNITION_RESULT_TOPIC)
+        
+        mqtt_client = client
+        return True
+        
+    except Exception as e:
+        print("EMQX连接失败:", e)
+        mqtt_client = None
+        return False
+
+def safe_publish(topic, message):
+    """安全的发布消息"""
+    global mqtt_client
+    
+    if not mqtt_client:
+        return False
+        
+    try:
+        mqtt_client.publish(topic, message)
+        return True
+    except Exception as e:
+        print("发布消息失败:", e)
+        mqtt_client = None
+        return False
+
+def send_video_frame_simple():
+    """简化的视频帧发送"""
+    global frame_count
+    
+    try:
+        # 捕获并压缩图像
+        img = sensor.snapshot()
+        jpeg_data = img.compress(quality=FRAME_QUALITY)
+        
+        if not isinstance(jpeg_data, bytes):
+            jpeg_data = bytes(jpeg_data)
+        
+        frame_size = len(jpeg_data)
+        
+        # 检查帧大小
+        if frame_size > MAX_FRAME_SIZE:
+            print("帧过大，跳过")
+            return False
+        
+        # 构建简化消息
+        message = ujson.dumps({
+            "frame_id": frame_count,
+            "timestamp": time.ticks_ms(),
+            "data": jpeg_data.hex()
+        })
+        
+        # 发送消息
+        if safe_publish(VIDEO_TOPIC, message):
+            frame_count += 1
+            if frame_count % 20 == 0:
+                print("已发送 {} 帧".format(frame_count))
+            return True
+        return False
+        
+    except Exception as e:
+        print("发送视频帧异常:", e)
+        return False
+
+def check_messages_safe():
+    """安全的消息检查"""
+    global mqtt_client
+    
+    if not mqtt_client:
+        return False
+        
+    try:
+        # 使用超时检查消息
+        mqtt_client.check_msg()
+        return True
+    except Exception as e:
+        # 不打印EIO错误，减少串口输出
+        if "EIO" not in str(e) and "5" not in str(e):
+            print("检查消息错误:", e)
+        mqtt_client = None
+        return False
+
+def stream_video_robust():
+    """增强稳定性的视频流主循环"""
+    global is_streaming
+    
+    print("开始视频流传输...")
+    print("目标FPS: {}, 质量: {}%".format(TARGET_FPS, FRAME_QUALITY))
+    
+    status_counter = 0
+    message_check_counter = 0
+    gc_counter = 0
+    
+    while True:
+        try:
+            current_time = time.ticks_ms()
+            
+            # 定期垃圾回收（每30帧一次）
+            gc_counter += 1
+            if gc_counter >= 30:
+                gc.collect()
+                gc_counter = 0
+            
+            # 定期检查消息（每5帧一次）
+            message_check_counter += 1
+            if message_check_counter >= 5 and mqtt_client:
+                check_messages_safe()
+                message_check_counter = 0
+            
+            if not is_streaming:
+                time.sleep_ms(200)
+                continue
+            
+            # 发送视频帧
+            if not send_video_frame_simple():
+                # 发送失败，尝试重新连接
+                print("发送失败，尝试重新连接...")
+                if not connect_emqx():
+                    time.sleep_ms(5000)
+                    continue
+            
+            # 定期状态报告（每50帧一次）
+            status_counter += 1
+            if status_counter >= 50:
+                status_msg = ujson.dumps({
+                    "frames_sent": frame_count,
+                    "memory_free": gc.mem_free(),
+                    "status": "streaming"
+                })
+                safe_publish(STATUS_TOPIC, status_msg)
+                status_counter = 0
+            
+            # 控制帧率
+            frame_delay = max(150, int(1000 / TARGET_FPS))
+            time.sleep_ms(frame_delay)
+            
+        except Exception as e:
+            print("视频流主循环错误:", e)
+            time.sleep_ms(3000)
+
+def main():
+    """主函数"""
+    print("=== OpenMV EMQX视频流 - 修复版本 ===")
+    
+    # 初始化硬件
+    init_camera()
+    
+    # 连接网络
+    print("初始化网络连接...")
+    if not connect_wifi():
+        print("网络初始化失败，重启程序")
+        return
+    
+    # 连接EMQX
+    print("初始化MQTT连接...")
+    if not connect_emqx():
+        print("MQTT初始化失败，重启程序")
+        return
+    
+    print("系统就绪! 开始稳定视频流传输...")
+    stream_video_robust()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序严重错误:", e)
+        print("等待重启...")
+        time.sleep(10)
+    finally:
+        # 清理资源
+        try:
+            if mqtt_client:
+                mqtt_client.disconnect()
+        except:
+            pass
+        

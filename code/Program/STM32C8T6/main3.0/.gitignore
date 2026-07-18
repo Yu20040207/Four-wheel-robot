@@ -1,0 +1,6 @@
+.vscode
+OUTPUT/*
+!OUTPUT/**.hex
+MDK_PRO/**.bak
+MDK_PRO/**.dep
+STM32_LIB

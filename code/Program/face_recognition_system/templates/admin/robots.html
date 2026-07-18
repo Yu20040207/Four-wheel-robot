@@ -1,0 +1,144 @@
+{% extends "admin/base.html" %}
+
+{% block title %}机器人管理{% endblock %}
+
+{% block content %}
+<h4 class="mb-4">机器人管理</h4>
+
+<div class="card p-4 mb-4">
+    <h5>添加机器人</h5>
+    <p class="text-muted small">robot_id 需与 ESP32 中配置一致（后期写入 NVS）</p>
+    <div class="row g-2 align-items-end">
+        <div class="col-md-3">
+            <label class="form-label">robot_id</label>
+            <input type="text" id="robotId" class="form-control" placeholder="R20240001">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">显示名称</label>
+            <input type="text" id="displayName" class="form-control" placeholder="客厅机器人">
+        </div>
+        <div class="col-md-3">
+            <label class="form-label">备注</label>
+            <input type="text" id="robotNotes" class="form-control">
+        </div>
+        <div class="col-md-3">
+            <button type="button" class="btn btn-primary" id="createRobotBtn">添加</button>
+        </div>
+    </div>
+    <div id="robotMsg" class="mt-2 small"></div>
+</div>
+
+<div class="card p-4">
+    <table class="table">
+        <thead><tr><th>robot_id</th><th>名称</th><th>备注</th><th>操作</th></tr></thead>
+        <tbody>
+        {% for r in robots %}
+            <tr>
+                <td><code>{{ r.robot_id }}</code></td>
+                <td>{{ r.display_name }}</td>
+                <td>{{ r.notes or '—' }}</td>
+                <td>
+                    <button class="btn btn-sm btn-outline-primary edit-robot"
+                            data-id="{{ r.robot_id }}"
+                            data-name="{{ r.display_name|e }}"
+                            data-notes="{{ r.notes|e }}">编辑</button>
+                    <button class="btn btn-sm btn-outline-danger delete-robot" data-id="{{ r.robot_id }}">删除</button>
+                </td>
+            </tr>
+        {% else %}
+            <tr><td colspan="4" class="text-muted">暂无机器人，请先添加</td></tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div class="modal fade" id="editRobotModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">编辑机器人</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editRobotId">
+                <div class="mb-3">
+                    <label class="form-label">robot_id</label>
+                    <input type="text" id="editRobotIdDisplay" class="form-control" disabled>
+                    <div class="form-text">robot_id 与 ESP32 固件一致，不建议在后台修改。</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">显示名称</label>
+                    <input type="text" id="editRobotName" class="form-control" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">备注</label>
+                    <input type="text" id="editRobotNotes" class="form-control">
+                </div>
+                <div id="editRobotMsg" class="small"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">取消</button>
+                <button type="button" class="btn btn-primary" id="saveRobotBtn">保存</button>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+document.getElementById('createRobotBtn').addEventListener('click', function () {
+    var msg = document.getElementById('robotMsg');
+    fetch('/admin/api/robots', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            robot_id: document.getElementById('robotId').value.trim(),
+            display_name: document.getElementById('displayName').value.trim(),
+            notes: document.getElementById('robotNotes').value.trim()
+        })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'mt-2 small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 800);
+    });
+});
+
+document.querySelectorAll('.delete-robot').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        if (!confirm('确定删除机器人 ' + this.dataset.id + '？')) return;
+        fetch('/admin/api/robots/' + encodeURIComponent(this.dataset.id), {method: 'DELETE'})
+            .then(function () { location.reload(); });
+    });
+});
+
+var editRobotModal = new bootstrap.Modal(document.getElementById('editRobotModal'));
+document.querySelectorAll('.edit-robot').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+        document.getElementById('editRobotId').value = this.dataset.id;
+        document.getElementById('editRobotIdDisplay').value = this.dataset.id;
+        document.getElementById('editRobotName').value = this.dataset.name || '';
+        document.getElementById('editRobotNotes').value = this.dataset.notes || '';
+        document.getElementById('editRobotMsg').textContent = '';
+        editRobotModal.show();
+    });
+});
+
+document.getElementById('saveRobotBtn').addEventListener('click', function () {
+    var robotId = document.getElementById('editRobotId').value;
+    var msg = document.getElementById('editRobotMsg');
+    fetch('/admin/api/robots/' + encodeURIComponent(robotId), {
+        method: 'PUT',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+            display_name: document.getElementById('editRobotName').value.trim(),
+            notes: document.getElementById('editRobotNotes').value.trim()
+        })
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        msg.className = 'small ' + (d.status === 'success' ? 'text-success' : 'text-danger');
+        msg.textContent = d.message;
+        if (d.status === 'success') setTimeout(function () { location.reload(); }, 600);
+    });
+});
+</script>
+{% endblock %}

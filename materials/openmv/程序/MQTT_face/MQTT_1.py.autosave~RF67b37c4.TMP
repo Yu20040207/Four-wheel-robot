@@ -1,0 +1,127 @@
+# openmv_simple_stable.py
+# 极度简化版本，确保基本稳定性
+import sensor
+import time
+import json
+from pyb import UART, LED
+import gc
+import machine
+
+# 最简单的相机初始化
+sensor.reset()
+sensor.set_pixformat(sensor.GRAYSCALE)  # 必须用灰度图
+sensor.set_framesize(sensor.QQVGA)      # 160x120，最低分辨率
+sensor.skip_frames(time=1000)           # 等待相机稳定
+
+# 关闭所有自动调整
+sensor.set_auto_gain(False)
+sensor.set_auto_whitebal(False)
+sensor.set_auto_exposure(False)
+
+# 串口设置
+uart = UART(3, 9600)
+
+# LED
+red = LED(1)
+green = LED(2)
+blue = LED(3)
+
+print("=== 简化版人脸检测启动 ===")
+print("相机: {}x{} 灰度".format(sensor.width(), sensor.height()))
+
+# 关闭所有LED
+red.off()
+green.off()
+blue.off()
+
+# 启动指示灯序列
+for i in range(3):
+    green.on()
+    time.sleep_ms(200)
+    green.off()
+    time.sleep_ms(200)
+
+frame_count = 0
+last_print_time = time.ticks_ms()
+
+def simple_face_detect(img):
+    """极度简化的人脸检测"""
+    try:
+        # 使用最基础的检测参数
+        faces = img.find_features(
+            sensor.HAAR_CASCADE_FACE,
+            threshold=0.5,
+            scale_factor=1.2
+        )
+        return faces if faces else []
+    except:
+        return []
+
+def send_simple_data(faces):
+    """简化数据发送"""
+    if not faces:
+        return False
+        
+    try:
+        data = {
+            'time': time.ticks_ms(),
+            'faces': len(faces)
+        }
+        uart.write(json.dumps(data) + '\n')
+        blue.on()
+        time.sleep_ms(10)
+        blue.off()
+        return True
+    except:
+        return False
+
+# 主循环 - 极度简化
+print("开始主循环...")
+try:
+    while True:
+        # 1. 捕获图像
+        img = sensor.snapshot()
+        frame_count += 1
+        
+        # 2. 每30帧检测一次人脸（降低频率）
+        if frame_count % 30 == 0:
+            faces = simple_face_detect(img)
+            
+            if faces:
+                green.on()
+                # 绘制人脸框
+                for f in faces:
+                    img.draw_rectangle(f, color=255)
+                send_simple_data(faces)
+                green.off()
+                print("检测到{}张人脸".format(len(faces)))
+        
+        # 3. 每100帧打印一次状态
+        current_time = time.ticks_ms()
+        if time.ticks_diff(current_time, last_print_time) > 5000:  # 5秒打印一次
+            fps = frame_count / 5  # 估算帧率
+            print("运行中 - 帧率: {:.1f}FPS, 总帧数: {}".format(fps, frame_count))
+            frame_count = 0
+            last_print_time = current_time
+            
+            # 垃圾回收
+            gc.collect()
+            print("内存空闲: {}字节".format(gc.mem_free()))
+        
+        # 4. 短暂延迟
+        time.sleep_ms(10)  # 10ms延迟，降低CPU负载
+        
+except Exception as e:
+    print("错误: {}".format(e))
+    red.on()
+    # 尝试恢复
+    for i in range(5):
+        red.on()
+        time.sleep_ms(200)
+        red.off()
+        time.sleep_ms(200)
+    
+    print("尝试重启...")
+    time.sleep_ms(2000)
+    machine.reset()
+    

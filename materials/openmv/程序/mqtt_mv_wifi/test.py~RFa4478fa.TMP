@@ -1,0 +1,1354 @@
+# openmv_emqx_tracking_system_v5.py
+import sensor
+import image
+import network
+import time
+import socket
+import struct
+import ujson
+import gc
+import machine
+from pyb import LED, UART, Servo
+from math import pi, isnan
+
+# PID控制器类
+class PID:
+    _kp = _ki = _kd = _integrator = _imax = 0
+    _last_error = _last_derivative = _last_t = 0
+    _RC = 1/(2 * pi * 20)
+
+    def __init__(self, p=0, i=0, d=0, imax=0):
+        self._kp = float(p)
+        self._ki = float(i)
+        self._kd = float(d)
+        self._imax = abs(imax)
+        self._last_derivative = float('nan')
+
+    def get_pid(self, error, scaler):
+        tnow = time.ticks_ms()
+        dt = tnow - self._last_t
+        output = 0
+        if self._last_t == 0 or dt > 1000:
+            dt = 0
+            self.reset_I()
+        self._last_t = tnow
+        delta_time = float(dt) / float(1000)
+        output += error * self._kp
+        if abs(self._kd) > 0 and dt > 0:
+            if isnan(self._last_derivative):
+                derivative = 0
+                self._last_derivative = 0
+            else:
+                derivative = (error - self._last_error) / delta_time
+            derivative = self._last_derivative + \
+                                     ((delta_time / (self._RC + delta_time)) * \
+                                        (derivative - self._last_derivative))
+            self._last_error = error
+            self._last_derivative = derivative
+            output += self._kd * derivative
+        output *= scaler
+        if abs(self._ki) > 0 and dt > 0:
+            self._integrator += (error * self._ki) * scaler * delta_time
+            if self._integrator < -self._imax:
+                self._integrator = -self._imax
+            elif self._integrator > self._imax:
+                self._integrator = self._imax
+            output += self._integrator
+        return output
+
+    def reset_I(self):
+        self._integrator = 0
+        self._last_derivative = float('nan')
+
+# 配置区域
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+RECOGNITION_RESULT_TOPIC = "openmv_recognition_result"
+RECOGNITION_ACK_TOPIC = "openmv/recognition_ack"
+FLASK_CONTROL_TOPIC = "flask/control"
+
+# 视频流配置
+FRAME_SIZE = sensor.QVGA  # 160x120
+FRAME_QUALITY = 60         # 降低质量以减少数据量
+TARGET_FPS = 25            # 降低帧率以提高稳定性
+MAX_FRAME_SIZE = 12000     # 限制最大帧大小(8KB)
+MAX_MESSAGE_SIZE = 25000   # 限制最大消息大小(10KB)
+
+# 系统状态定义
+SYSTEM_STATE_OFF = 0           # 初始状态，摄像头关闭
+SYSTEM_STATE_READY = 1         # 摄像头准备就绪
+SYSTEM_STATE_CAMERA_ON = 2     # 摄像头开启但不追踪
+SYSTEM_STATE_FACE_ON = 3       # 摄像头开启并开始追踪人脸
+SYSTEM_STATE_RECOGNITION_ON = 4 # 摄像头追踪并开启人脸识别
+SYSTEM_STATE_RECOGNITION_OFF = 5 # 摄像头关闭人脸识别但保持追踪
+
+# 全局变量
+mqtt_socket = None
+frame_count = 0
+last_recognition_time = 0
+received_messages = []
+message_buffer = bytearray()
+CLIENT_ID = "openmv_camera_001"
+
+# 舵机和PID相关
+pan_servo = None
+tilt_servo = None
+pan_pid = None
+tilt_pid = None
+face_cascade = None
+
+# 串口配置
+uart = None
+
+# 连接状态
+CONNECT_STATE_NORMAL = 0
+CONNECT_STATE_ERROR = 1
+CONNECT_STATE_RECONNECTING = 2
+CONNECT_STATE_RESETTING = 3
+connect_state = CONNECT_STATE_NORMAL
+reconnect_attempts = 0
+max_reconnect_attempts = 3
+last_reconnect_attempt = 0
+reconnect_delay = 5000
+
+# 系统重置相关
+reset_attempts = 0
+max_reset_attempts = 1
+last_reset_attempt = 0
+reset_delay = 10000
+
+# LED状态
+LED_OFF = 0
+LED_READY = 1
+LED_CAMERA_ON = 2
+LED_TRACKING = 3
+LED_RECOGNITION = 4
+LED_ERROR = 5
+LED_RECONNECTING = 6
+LED_RESETTING = 7
+
+current_led_state = LED_OFF
+led_blink_state = False
+last_led_change = 0
+led_blink_interval = 500
+recognition_led_start = 0
+
+# 发送统计
+send_errors = 0
+max_send_errors = 5
+last_successful_send = 0
+consecutive_errors = 0
+max_consecutive_errors = 10
+
+# 系统状态
+system_state = SYSTEM_STATE_OFF
+
+# 舵机角度打印控制
+last_angle_print_time = 0
+angle_print_interval = 1000  # 1秒打印一次
+
+# 摄像头模式
+CAMERA_MODE_COLOR = 0
+CAMERA_MODE_GRAYSCALE = 1
+current_camera_mode = CAMERA_MODE_COLOR
+
+# 人脸检测状态
+last_face_detected = False
+face_detected_blink_start = 0
+face_detected_blink_duration = 300  # 绿灯闪烁持续时间(ms)
+
+def init_camera(mode=CAMERA_MODE_COLOR):
+    """初始化摄像头 - 可切换彩色/灰度模式"""
+    global current_camera_mode
+    try:
+        sensor.reset()
+
+        if mode == CAMERA_MODE_COLOR:
+            sensor.set_pixformat(sensor.RGB565)
+            mode_str = "彩色"
+        else:
+            sensor.set_pixformat(sensor.GRAYSCALE)
+            mode_str = "灰度"
+
+        sensor.set_framesize(FRAME_SIZE)
+        sensor.skip_frames(20)
+        sensor.set_auto_whitebal(False)
+        sensor.set_auto_gain(False)
+        sensor.set_auto_exposure(False, exposure_us=20000)
+
+        current_camera_mode = mode
+        print("摄像头初始化完成 - {}模式, 分辨率: {}x{}".format(mode_str, sensor.width(), sensor.height()))
+        return True
+    except Exception as e:
+        print(f"❌ 摄像头初始化失败: {e}")
+        return False
+
+def switch_camera_mode(mode):
+    """切换摄像头模式"""
+    global current_camera_mode
+    if current_camera_mode == mode:
+        return True
+
+    if mode == CAMERA_MODE_COLOR:
+        sensor.set_pixformat(sensor.RGB565)
+        mode_str = "彩色"
+    else:
+        sensor.set_pixformat(sensor.GRAYSCALE)
+        mode_str = "灰度"
+
+    sensor.skip_frames(5)  # 跳过几帧让设置生效
+    current_camera_mode = mode
+    print(f"✅ 摄像头切换到{mode}模式")
+    return True
+
+def init_servos():
+    """初始化舵机"""
+    global pan_servo, tilt_servo, pan_pid, tilt_pid
+    try:
+        pan_servo = Servo(1)
+        tilt_servo = Servo(2)
+
+        pan_servo.calibration(500, 2500, 1500)
+        tilt_servo.calibration(500, 2500, 1500)
+
+        # PID参数
+        pan_pid = PID(p=0.15, i=0, d=0.003, imax=90)
+        tilt_pid = PID(p=0.15, i=0, d=0.006, imax=90)
+
+        # 舵机复位到中间位置
+        middle()
+        print("舵机初始化完成")
+        return True
+    except Exception as e:
+        print(f"❌ 舵机初始化失败: {e}")
+        return False
+
+def init_face_cascade():
+    """初始化人脸检测"""
+    global face_cascade
+    try:
+        face_cascade = image.HaarCascade("/rom/haarcascade_frontalface.cascade", stages=25)
+        print("人脸检测模型加载完成")
+        return True
+    except Exception as e:
+        print(f"❌ 人脸检测模型加载失败: {e}")
+        return False
+
+def init_led():
+    """初始化LED"""
+    global red_led, green_led, blue_led
+    try:
+        red_led = LED(1)
+        green_led = LED(2)
+        blue_led = LED(3)
+        red_led.off()
+        green_led.off()
+        blue_led.off()
+        print("LED初始化完成")
+        return True
+    except Exception as e:
+        print(f"❌ LED初始化失败: {e}")
+        return False
+
+def init_uart():
+    """初始化串口"""
+    global uart
+    try:
+        uart = UART(3, 115200)
+        uart.init(115200, bits=8, parity=None, stop=1, timeout_char=200)
+        print("串口初始化完成 - UART3, 115200bps")
+        return True
+    except Exception as e:
+        print(f"❌ 串口初始化失败: {e}")
+        return False
+
+def middle():
+    """舵机回归中位"""
+    if pan_servo and tilt_servo:
+        pan_servo.angle(0)
+        tilt_servo.angle(0)
+        print("舵机复位到中间位置")
+
+def send_id_via_uart(recognized_ids):
+    """通过串口发送识别到的ID"""
+    global uart
+    try:
+        if uart is None:
+            if not init_uart():
+                print("❌ 无法初始化串口")
+                return False
+
+        if recognized_ids:
+            id_str = ",".join(recognized_ids)
+            message = f"{id_str}\n"
+            bytes_sent = uart.write(message.encode('utf-8'))
+
+            if bytes_sent == len(message):
+                print(f"✅ 已通过串口发送ID: {id_str}")
+                return True
+            else:
+                print(f"❌ 串口发送不完整: {bytes_sent}/{len(message)} 字节")
+                return False
+        else:
+            print("⚠️ 没有可发送的ID")
+            return False
+    except Exception as e:
+        print(f"❌ 串口发送失败: {e}")
+        return False
+
+def update_led():
+    """更新LED状态"""
+    global current_led_state, led_blink_state, last_led_change, recognition_led_start
+    global face_detected_blink_start, last_face_detected
+
+    current_time = time.ticks_ms()
+
+    # 处理人脸检测到的绿灯闪烁
+    if face_detected_blink_start > 0:
+        if time.ticks_diff(current_time, face_detected_blink_start) < face_detected_blink_duration:
+            # 绿灯闪烁期间
+            green_led.on()
+            return
+        else:
+            # 闪烁结束，恢复正常状态
+            face_detected_blink_start = 0
+            # 恢复之前的LED状态
+            if current_led_state == LED_TRACKING:
+                blue_led.on()
+                green_led.off()
+                red_led.off()
+            elif current_led_state == LED_RECOGNITION:
+                blue_led.on()
+                green_led.off()
+                red_led.off()
+            elif current_led_state == LED_CAMERA_ON:
+                green_led.on()
+                red_led.off()
+                blue_led.off()
+            elif current_led_state == LED_READY:
+                green_led.on()
+                red_led.off()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+            last_led_change = current_time
+
+    # 特殊状态处理
+    if current_led_state == LED_RECOGNITION:
+        if recognition_led_start == 0:
+            recognition_led_start = current_time
+            blue_led.on()
+            green_led.off()
+            red_led.off()
+        elif time.ticks_diff(current_time, recognition_led_start) > 300:
+            blue_led.off()
+            recognition_led_start = 0
+            # 根据系统状态恢复之前的LED状态
+            if system_state == SYSTEM_STATE_RECOGNITION_ON:
+                current_led_state = LED_RECOGNITION
+            elif system_state == SYSTEM_STATE_FACE_ON:
+                current_led_state = LED_TRACKING
+            elif system_state == SYSTEM_STATE_CAMERA_ON:
+                current_led_state = LED_CAMERA_ON
+            else:
+                current_led_state = LED_READY
+            last_led_change = current_time
+        return
+
+    if current_led_state == LED_RECONNECTING:
+        if time.ticks_diff(current_time, last_led_change) > 300:
+            led_blink_state = not led_blink_state
+            last_led_change = current_time
+            if led_blink_state:
+                red_led.on()
+                green_led.on()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+        return
+
+    if current_led_state == LED_RESETTING:
+        if time.ticks_diff(current_time, last_led_change) > 200:
+            led_blink_state = not led_blink_state
+            last_led_change = current_time
+            if led_blink_state:
+                red_led.on()
+                green_led.off()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+        return
+
+    # 常规状态处理
+    if time.ticks_diff(current_time, last_led_change) > led_blink_interval:
+        led_blink_state = not led_blink_state
+        last_led_change = current_time
+
+        if current_led_state == LED_OFF:
+            red_led.off()
+            green_led.off()
+            blue_led.off()
+        elif current_led_state == LED_READY:
+            if led_blink_state:
+                green_led.on()
+                red_led.off()
+                blue_led.off()
+            else:
+                green_led.off()
+                red_led.off()
+                blue_led.off()
+        elif current_led_state == LED_CAMERA_ON:
+            green_led.on()
+            red_led.off()
+            blue_led.off()
+        elif current_led_state == LED_TRACKING:
+            if led_blink_state:
+                blue_led.on()
+                green_led.off()
+                red_led.off()
+            else:
+                blue_led.off()
+                green_led.off()
+                red_led.off()
+        elif current_led_state == LED_RECOGNITION:
+            if led_blink_state:
+                blue_led.on()
+                green_led.off()
+                red_led.off()
+            else:
+                blue_led.off()
+                green_led.off()
+                red_led.off()
+        elif current_led_state == LED_ERROR:
+            if led_blink_state:
+                red_led.on()
+                green_led.off()
+                blue_led.off()
+            else:
+                red_led.off()
+                green_led.off()
+                blue_led.off()
+
+def set_led_state(state):
+    """设置LED状态"""
+    global current_led_state, last_led_change, recognition_led_start
+    if current_led_state == state and state != LED_RECOGNITION:
+        return
+    current_led_state = state
+    last_led_change = time.ticks_ms()
+    recognition_led_start = 0
+
+    # 立即设置LED状态
+    if state == LED_OFF:
+        red_led.off()
+        green_led.off()
+        blue_led.off()
+    elif state == LED_READY:
+        green_led.on()
+        red_led.off()
+        blue_led.off()
+    elif state == LED_CAMERA_ON:
+        green_led.on()
+        red_led.off()
+        blue_led.off()
+    elif state == LED_TRACKING:
+        blue_led.on()
+        green_led.off()
+        red_led.off()
+    elif state == LED_RECOGNITION:
+        blue_led.on()
+        green_led.off()
+        red_led.off()
+    elif state == LED_ERROR:
+        red_led.on()
+        green_led.off()
+        blue_led.off()
+    elif state == LED_RECONNECTING:
+        red_led.on()
+        green_led.on()
+        blue_led.off()
+    elif state == LED_RESETTING:
+        red_led.on()
+        green_led.off()
+        blue_led.off()
+
+def trigger_face_detected_blink():
+    """触发检测到人脸时的绿灯闪烁"""
+    global face_detected_blink_start
+    face_detected_blink_start = time.ticks_ms()
+    print("🟢 检测到人脸 - 绿灯闪烁")
+
+def connect_wifi():
+    """连接WiFi"""
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        wlan.active(True)
+        print("连接WiFi: {}...".format(SSID))
+
+        if wlan.isconnected():
+            wlan.disconnect()
+            time.sleep(1)
+
+        wlan.connect(SSID, KEY)
+        timeout = 30
+        while not wlan.isconnected() and timeout > 0:
+            time.sleep_ms(500)
+            timeout -= 1
+            print(".", end="")
+
+        if wlan.isconnected():
+            print("\nWiFi连接成功!")
+            print("IP地址:", wlan.ifconfig()[0])
+            return True
+        else:
+            print("\nWiFi连接失败!")
+            return False
+    except Exception as e:
+        print(f"❌ WiFi连接异常: {e}")
+        return False
+
+def check_wifi_connection():
+    """检查WiFi连接状态"""
+    try:
+        wlan = network.WLAN(network.STA_IF)
+        return wlan.isconnected()
+    except:
+        return False
+
+def subscribe_topic(sock, topic):
+    """订阅主题"""
+    try:
+        packet_id = 1
+        subscribe_payload = bytearray()
+        subscribe_payload.extend(struct.pack(">H", packet_id))
+        subscribe_payload.extend(struct.pack(">H", len(topic)))
+        subscribe_payload.extend(topic.encode())
+        subscribe_payload.append(0)
+        remaining_len = len(subscribe_payload)
+        subscribe_packet = bytearray([0x82, remaining_len]) + subscribe_payload
+        sock.send(subscribe_packet)
+
+        sock.settimeout(3.0)
+        suback = sock.recv(5)
+        sock.settimeout(None)
+
+        print(f"SUBACK响应: {suback.hex()}")
+        print(f"✅ 成功订阅主题: {topic}")
+        return True
+    except Exception as e:
+        print(f"订阅主题失败: {e}")
+        return False
+
+def connect_mqtt_socket():
+    """使用原始Socket连接MQTT服务器"""
+    global mqtt_socket, connect_state, reconnect_attempts, send_errors, consecutive_errors
+    try:
+        print(f"🔗 连接MQTT Socket: {EMQX_BROKER}:{EMQX_PORT}")
+
+        if mqtt_socket:
+            try:
+                mqtt_socket.close()
+            except:
+                pass
+            mqtt_socket = None
+            time.sleep_ms(500)
+
+        addr = socket.getaddrinfo(EMQX_BROKER, EMQX_PORT)[0][-1]
+        sock = socket.socket()
+        sock.settimeout(8.0)
+        sock.connect(addr)
+        sock.settimeout(None)
+        print("✅ Socket连接成功")
+
+        protocol_name = "MQTT"
+        protocol_level = 4
+        connect_flags = 0xC2
+        keepalive = 60
+
+        variable_header = bytearray()
+        variable_header.extend(struct.pack(">H", len(protocol_name)))
+        variable_header.extend(protocol_name.encode())
+        variable_header.append(protocol_level)
+        variable_header.append(connect_flags)
+        variable_header.extend(struct.pack(">H", keepalive))
+
+        payload = bytearray()
+        payload.extend(struct.pack(">H", len(CLIENT_ID)))
+        payload.extend(CLIENT_ID.encode())
+        payload.extend(struct.pack(">H", len(EMQX_USERNAME)))
+        payload.extend(EMQX_USERNAME.encode())
+        payload.extend(struct.pack(">H", len(EMQX_PASSWORD)))
+        payload.extend(EMQX_PASSWORD.encode())
+
+        remaining_length = len(variable_header) + len(payload)
+        fixed_header = bytearray([0x10, remaining_length])
+        connect_packet = fixed_header + variable_header + payload
+        sock.send(connect_packet)
+        print("已发送CONNECT报文")
+
+        sock.settimeout(5.0)
+        connack = sock.recv(4)
+        sock.settimeout(None)
+        print("CONNACK响应:", connack.hex())
+
+        if connack[0] == 0x20 and connack[3] == 0x00:
+            print("✅ MQTT连接成功")
+            # 订阅所有需要的主题
+            topics = [RECOGNITION_RESULT_TOPIC, FLASK_CONTROL_TOPIC]
+            for topic in topics:
+                if not subscribe_topic(sock, topic):
+                    print(f"❌ 订阅主题 {topic} 失败")
+                    sock.close()
+                    connect_state = CONNECT_STATE_ERROR
+                    set_led_state(LED_ERROR)
+                    return False
+
+            mqtt_socket = sock
+            connect_state = CONNECT_STATE_NORMAL
+            reconnect_attempts = 0
+            send_errors = 0
+            consecutive_errors = 0
+            set_led_state(LED_READY)
+            return True
+        else:
+            print("❌ MQTT连接失败")
+            sock.close()
+            connect_state = CONNECT_STATE_ERROR
+            set_led_state(LED_ERROR)
+            return False
+    except Exception as e:
+        print(f"❌ MQTT Socket连接失败: {e}")
+        try:
+            sock.close()
+        except:
+            pass
+        connect_state = CONNECT_STATE_ERROR
+        set_led_state(LED_ERROR)
+        return False
+
+def encode_remaining_length(length):
+    """编码MQTT剩余长度字段"""
+    encoded = bytearray()
+    while True:
+        digit = length % 128
+        length //= 128
+        if length > 0:
+            digit |= 0x80
+        encoded.append(digit)
+        if length == 0:
+            break
+    return encoded
+
+def publish_message_safe(topic, message):
+    """安全地发布消息到MQTT主题"""
+    global mqtt_socket, connect_state, send_errors, last_successful_send, consecutive_errors
+
+    if not mqtt_socket or connect_state != CONNECT_STATE_NORMAL:
+        print("❌ MQTT Socket未连接或连接异常")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    try:
+        if isinstance(message, str):
+            message_bytes = message.encode('utf-8')
+        else:
+            message_bytes = message
+
+        if len(message_bytes) > MAX_MESSAGE_SIZE:
+            print(f"❌ 消息过长: {len(message_bytes)} > {MAX_MESSAGE_SIZE} 字节")
+            return False
+
+        fixed_header = bytearray([0x30])
+        variable_header = bytearray()
+        topic_bytes = topic.encode('utf-8')
+        variable_header.extend(struct.pack(">H", len(topic_bytes)))
+        variable_header.extend(topic_bytes)
+        payload = message_bytes
+
+        remaining_length = len(variable_header) + len(payload)
+        encoded_remaining = encode_remaining_length(remaining_length)
+        fixed_header.extend(encoded_remaining)
+        publish_packet = fixed_header + variable_header + payload
+
+        total_packet_size = len(publish_packet)
+        if total_packet_size > 65535:
+            print(f"❌ 数据包过大: {total_packet_size} 字节")
+            return False
+
+        mqtt_socket.settimeout(3.0)
+        try:
+            bytes_sent = mqtt_socket.send(publish_packet)
+            mqtt_socket.settimeout(None)
+
+            if bytes_sent == len(publish_packet):
+                send_errors = 0
+                consecutive_errors = 0
+                last_successful_send = time.ticks_ms()
+                return True
+            else:
+                print(f"❌ 发送不完整: {bytes_sent}/{len(publish_packet)} 字节")
+                send_errors += 1
+                consecutive_errors += 1
+                return False
+        except OSError as e:
+            mqtt_socket.settimeout(None)
+            print(f"❌ 发送失败: {e}")
+            send_errors += 1
+            consecutive_errors += 1
+            try:
+                mqtt_socket.close()
+            except:
+                pass
+            mqtt_socket = None
+            connect_state = CONNECT_STATE_ERROR
+            return False
+
+    except Exception as e:
+        print(f"发布消息失败: {e}")
+        send_errors += 1
+        consecutive_errors += 1
+        return False
+
+def attempt_reconnect():
+    """尝试重新连接"""
+    global reconnect_attempts, last_reconnect_attempt, connect_state, send_errors
+
+    current_time = time.ticks_ms()
+    if time.ticks_diff(current_time, last_reconnect_attempt) < reconnect_delay:
+        return False
+
+    if reconnect_attempts >= max_reconnect_attempts:
+        print(f"❌ 已达到最大重连次数 ({max_reconnect_attempts})，将尝试系统重置")
+        connect_state = CONNECT_STATE_RESETTING
+        return False
+
+    reconnect_attempts += 1
+    last_reconnect_attempt = current_time
+    print(f"🔄 尝试重新连接 ({reconnect_attempts}/{max_reconnect_attempts})...")
+    set_led_state(LED_RECONNECTING)
+
+    if not check_wifi_connection():
+        print("WiFi连接已断开，尝试重新连接WiFi...")
+        if connect_wifi():
+            print("WiFi重新连接成功")
+        else:
+            print("WiFi重新连接失败")
+            return False
+
+    if connect_mqtt_socket():
+        print("✅ MQTT重新连接成功")
+        return True
+    else:
+        print(f"❌ MQTT重新连接失败 ({reconnect_attempts}/{max_reconnect_attempts})")
+        return False
+
+def attempt_system_reset():
+    """尝试系统重置"""
+    global reset_attempts, last_reset_attempt, connect_state
+
+    current_time = time.ticks_ms()
+    if time.ticks_diff(current_time, last_reset_attempt) < reset_delay:
+        return False
+
+    if reset_attempts >= max_reset_attempts:
+        print(f"❌ 已达到最大重置次数 ({max_reset_attempts})，系统将保持错误状态")
+        set_led_state(LED_ERROR)
+        return False
+
+    reset_attempts += 1
+    last_reset_attempt = current_time
+    print(f"🔄 尝试系统重置 ({reset_attempts}/{max_reset_attempts})...")
+    set_led_state(LED_RESETTING)
+
+    try:
+        print("执行软重置...")
+        machine.reset()
+    except Exception as e:
+        print(f"❌ 软重置失败: {e}")
+        try:
+            print("尝试硬重置...")
+            machine.reset()
+        except:
+            print("❌ 硬重置失败")
+
+    return False
+
+def compress_frame(img):
+    """压缩图像帧，确保大小在限制内"""
+    quality = FRAME_QUALITY
+    max_attempts = 3
+
+    for attempt in range(max_attempts):
+        jpeg_data = img.compress(quality=quality)
+        if not isinstance(jpeg_data, bytes):
+            jpeg_data = bytes(jpeg_data)
+
+        frame_size = len(jpeg_data)
+
+        if frame_size <= MAX_FRAME_SIZE:
+            return jpeg_data, frame_size, quality
+
+        quality = max(10, quality - 15)
+        print(f"⚠️ 帧过大 ({frame_size}字节)，降低质量为{quality}%")
+
+    return jpeg_data, frame_size, quality
+
+def send_frame():
+    """发送一帧图像 - 根据当前模式发送彩色或灰度图"""
+    global frame_count, connect_state, send_errors
+
+    if connect_state != CONNECT_STATE_NORMAL:
+        return False
+
+    try:
+        img = sensor.snapshot()
+
+        jpeg_data, frame_size, actual_quality = compress_frame(img)
+
+        if frame_size > MAX_FRAME_SIZE:
+            print(f"❌ 帧过大 ({frame_size}字节)，跳过此帧")
+            return False
+
+        # 根据当前摄像头模式设置格式
+        if current_camera_mode == CAMERA_MODE_COLOR:
+            format_str = "RGB"
+        else:
+            format_str = "grayscale"
+
+        message = {
+            "frame_id": frame_count,
+            "timestamp": time.ticks_ms(),
+            "width": img.width(),
+            "height": img.height(),
+            "quality": actual_quality,
+            "size": frame_size,
+            "format": format_str,  # 添加格式标识
+            "data": jpeg_data.hex()
+        }
+
+        message_json = ujson.dumps(message)
+
+        if len(message_json) > MAX_MESSAGE_SIZE:
+            print(f"❌ JSON消息过大: {len(message_json)} 字节，跳过此帧")
+            return False
+
+        if publish_message_safe(VIDEO_TOPIC, message_json):
+            frame_count += 1
+            if frame_count % 10 == 0:
+                print("📹 已发送 {} 帧, 大小: {} 字节, 质量: {}%, 格式: {}".format(
+                    frame_count, frame_size, actual_quality, format_str))
+            return True
+        else:
+            print("❌ 发送帧失败")
+            return False
+
+    except Exception as e:
+        print("发送帧失败:", e)
+        send_errors += 1
+        return False
+
+def check_connection_health():
+    """检查连接健康状况"""
+    global send_errors, connect_state, last_successful_send, consecutive_errors
+
+    current_time = time.ticks_ms()
+
+    if consecutive_errors >= max_consecutive_errors:
+        print(f"⚠️ 连续错误过多 ({consecutive_errors})，立即触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    if send_errors >= max_send_errors:
+        print(f"⚠️ 发送错误过多 ({send_errors})，触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    if last_successful_send > 0 and time.ticks_diff(current_time, last_successful_send) > 20000:
+        print("⚠️ 20秒内无成功发送，触发重连")
+        connect_state = CONNECT_STATE_ERROR
+        return False
+
+    return True
+
+def check_and_process_messages():
+    """检查并处理接收到的MQTT消息"""
+    global mqtt_socket, message_buffer, received_messages, connect_state
+
+    if not mqtt_socket or connect_state != CONNECT_STATE_NORMAL:
+        return
+
+    try:
+        mqtt_socket.setblocking(False)
+        try:
+            chunk = mqtt_socket.recv(512)
+            if chunk:
+                message_buffer.extend(chunk)
+        except OSError:
+            pass
+
+        while len(message_buffer) >= 2:
+            packet_type = message_buffer[0] & 0xF0
+            if packet_type == 0x30:
+                topic, message = parse_mqtt_publish_safe(message_buffer)
+                if topic and message is not None:
+                    received_messages.append((topic, message))
+                    print(f"📨 收到消息 - 主题: {topic}, 长度: {len(message)}字节")
+                    if topic == RECOGNITION_RESULT_TOPIC:
+                        set_led_state(LED_RECOGNITION)
+                break
+            else:
+                message_buffer = message_buffer[1:]
+
+        process_received_messages()
+
+    except Exception as e:
+        print(f"检查消息时出错: {e}")
+        connect_state = CONNECT_STATE_ERROR
+
+def parse_mqtt_publish_safe(data):
+    """安全地解析MQTT PUBLISH报文"""
+    try:
+        if len(data) < 2:
+            return None, None
+        if (data[0] & 0xF0) != 0x30:
+            return None, None
+
+        multiplier = 1
+        value = 0
+        pos = 1
+
+        while pos < len(data):
+            encoded_byte = data[pos]
+            value += (encoded_byte & 127) * multiplier
+            multiplier *= 128
+            pos += 1
+            if (encoded_byte & 128) == 0:
+                break
+            if multiplier > 128 * 128 * 128:
+                return None, None
+
+        remaining_length = value
+        total_length = pos + remaining_length
+
+        if len(data) < total_length:
+            return None, None
+
+        if len(data) < pos + 2:
+            return None, None
+        topic_length = struct.unpack(">H", data[pos:pos+2])[0]
+
+        if len(data) < pos + 2 + topic_length:
+            return None, None
+
+        topic = data[pos+2:pos+2+topic_length].decode('utf-8')
+        message_start = pos + 2 + topic_length
+        message = data[message_start:total_length]
+
+        global message_buffer
+        message_buffer = message_buffer[total_length:]
+
+        return topic, message
+
+    except Exception as e:
+        print(f"解析MQTT报文错误: {e}")
+        return None, None
+
+def process_received_messages():
+    """处理已接收的消息"""
+    global received_messages, last_recognition_time
+
+    for topic, message in received_messages:
+        try:
+            if isinstance(message, bytes):
+                msg_str = message.decode('utf-8')
+            else:
+                msg_str = message
+
+            print(f"处理消息 - 主题: {topic}, 内容: {msg_str}")
+
+            data = ujson.loads(msg_str)
+
+            if topic == RECOGNITION_RESULT_TOPIC:
+                recognized_names = data.get("recognized_names", [])
+                recognized_ids = data.get("recognized_ids", [])
+                count = data.get("count", 0)
+
+                if count > 0:
+                    print("\n" + "="*40)
+                    print("🎯 人脸识别结果:")
+
+                    print("  识别到 {} 个人:".format(count))
+                    for i, (name, id_val) in enumerate(zip(recognized_names, recognized_ids)):
+                        print("  👤 {}: {} (ID: {})".format(i+1, name, id_val))
+                    print("="*40)
+
+                    # 通过串口发送识别到的ID
+                    if recognized_ids:
+                        send_id_via_uart(recognized_ids)
+                    else:
+                        print("⚠️ 没有识别到ID")
+
+                    ack_message = {
+                        "status": "received",
+                        "recognized_names": recognized_names,
+                        "recognized_ids": recognized_ids,
+                        "count": count,
+                        "client_timestamp": time.ticks_ms()
+                    }
+                    publish_message_safe(RECOGNITION_ACK_TOPIC, ujson.dumps(ack_message))
+                    print("📨 已发送确认消息")
+
+                    last_recognition_time = time.ticks_ms()
+                else:
+                    print("\n❌ 未识别到任何人脸")
+
+        except Exception as e:
+            print("处理消息失败:", e)
+
+    received_messages = []
+
+def send_status():
+    """发送状态信息"""
+    global frame_count, last_recognition_time, connect_state, send_errors
+
+    if connect_state != CONNECT_STATE_NORMAL:
+        return False
+
+    # 根据当前摄像头模式设置格式
+    if current_camera_mode == CAMERA_MODE_COLOR:
+        format_str = "RGB"
+    else:
+        format_str = "grayscale"
+
+    status_msg = {
+        "frames_sent": frame_count,
+        "memory_free": gc.mem_free(),
+        "status": "streaming",
+        "send_errors": send_errors,
+        "client_id": CLIENT_ID,
+        "resolution": "{}x{}".format(sensor.width(), sensor.height()),
+        "system_state": system_state,
+        "format": format_str  # 添加格式信息
+    }
+
+    if publish_message_safe(STATUS_TOPIC, ujson.dumps(status_msg)):
+        print("📊 状态: 帧数={}, 错误={}, 内存={}字节, 系统状态={}, 格式={}".format(
+            frame_count, send_errors, gc.mem_free(), system_state, format_str))
+        return True
+    else:
+        print("❌ 发送状态失败")
+        return False
+
+def find_max_face(faces):
+    """查找识别到的人脸区域中最大区域的函数"""
+    max_size = 0
+    max_face = None
+    for face in faces:
+        if face[2] * face[3] > max_size:
+            max_face = face
+            max_size = face[2] * face[3]
+    return max_face
+
+def face_tracking():
+    """人脸追踪函数"""
+    global pan_servo, tilt_servo, pan_pid, tilt_pid, face_cascade
+    global last_angle_print_time, angle_print_interval
+    global last_face_detected
+
+    if system_state not in [SYSTEM_STATE_FACE_ON, SYSTEM_STATE_RECOGNITION_ON, SYSTEM_STATE_RECOGNITION_OFF]:
+        return
+
+    try:
+        # 切换到灰度图模式进行人脸检测
+        if current_camera_mode != CAMERA_MODE_GRAYSCALE:
+            switch_camera_mode(CAMERA_MODE_GRAYSCALE)
+
+        img = sensor.snapshot()
+
+        # 检测人脸 - 使用灰度图直接检测
+        faces = img.find_features(face_cascade, threshold=0.3, scale_factor=1.5)
+
+        # 检查人脸检测状态变化
+        current_face_detected = len(faces) > 0
+
+        # 如果从无人脸状态切换到检测到人脸状态，触发绿灯闪烁
+        if current_face_detected and not last_face_detected:
+            trigger_face_detected_blink()
+
+        last_face_detected = current_face_detected
+
+        if faces:
+            max_face = find_max_face(faces)
+
+            # 计算人脸中心点与图像中心的误差
+            face_center_x = max_face[0] + max_face[2] // 2
+            face_center_y = max_face[1] + max_face[3] // 2
+
+            pan_error = face_center_x - img.width() // 2
+            tilt_error = face_center_y - img.height() // 2
+
+            # 绘制人脸矩形和中心十字 - 在灰度图上绘制白色框
+            img.draw_rectangle(max_face, color=255, thickness=2)  # 白色矩形
+            img.draw_cross(face_center_x, face_center_y, color=255, size=10, thickness=2)  # 白色十字
+
+            # 在图像上显示追踪状态
+            img.draw_string(5, 5, "TRACKING", color=255, scale=1)
+            img.draw_string(5, 20, "Faces: {}".format(len(faces)), color=255, scale=1)
+
+            # 计算PID输出
+            pan_output = pan_pid.get_pid(pan_error, 1) / 2
+            tilt_output = tilt_pid.get_pid(tilt_error, 1) / 2
+
+            # 控制舵机转动
+            pan_servo.angle(pan_servo.angle() - pan_output)
+            tilt_servo.angle(tilt_servo.angle() + tilt_output)
+
+            # 舵机角度限制
+            if pan_servo.angle() > 90:
+                pan_servo.angle(90)
+            if pan_servo.angle() < -90:
+                pan_servo.angle(-90)
+            if tilt_servo.angle() > 45:
+                tilt_servo.angle(45)
+            if tilt_servo.angle() < -60:
+                tilt_servo.angle(-60)
+
+            # 每隔1秒打印舵机角度
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_angle_print_time) > angle_print_interval:
+                print("🎯 人脸追踪中 - 检测到{}个人脸, Pan: {:.1f}°, Tilt: {:.1f}°".format(
+                    len(faces), pan_servo.angle(), tilt_servo.angle()))
+                last_angle_print_time = current_time
+
+        else:
+            # 如果没有检测到人脸，重置PID积分项
+            pan_pid.reset_I()
+            tilt_pid.reset_I()
+
+            # 在图像上显示未检测到人脸
+            img.draw_string(5, 5, "NO FACE", color=255, scale=1)
+
+    except Exception as e:
+        print(f"人脸追踪错误: {e}")
+
+def process_serial_command():
+    """处理串口命令"""
+    global system_state, uart, last_face_detected
+
+    if uart is None:
+        return
+
+    if uart.any():
+        data = uart.read(1)
+        print(f"📟 接收到串口命令: {data}")
+
+        if data == b'0':
+            if system_state == SYSTEM_STATE_OFF:
+                # 从关闭状态切换到准备状态
+                system_state = SYSTEM_STATE_READY
+                set_led_state(LED_READY)
+                # 切换到彩色图模式
+                switch_camera_mode(CAMERA_MODE_COLOR)
+                print("✅ 摄像头准备就绪camera_ready")
+            elif system_state == SYSTEM_STATE_CAMERA_ON:
+                # 从摄像头开启状态切换到人脸追踪状态
+                system_state = SYSTEM_STATE_FACE_ON
+                set_led_state(LED_TRACKING)
+                # 切换到灰度图模式进行人脸追踪
+                switch_camera_mode(CAMERA_MODE_GRAYSCALE)
+                # 重置人脸检测状态
+                last_face_detected = False
+                print("✅ 开始人脸追踪face_on")
+
+        elif data == b'1':
+            if system_state == SYSTEM_STATE_READY:
+                # 从准备状态切换到摄像头开启状态
+                system_state = SYSTEM_STATE_CAMERA_ON
+                set_led_state(LED_CAMERA_ON)
+                # 保持彩色图模式
+                switch_camera_mode(CAMERA_MODE_COLOR)
+                print("✅ 摄像头开启camera_on")
+
+        elif data == b'2':
+            if system_state in [SYSTEM_STATE_FACE_ON, SYSTEM_STATE_RECOGNITION_OFF]:
+                # 开启人脸识别
+                system_state = SYSTEM_STATE_RECOGNITION_ON
+                set_led_state(LED_RECOGNITION)
+                # 保持灰度图模式
+                switch_camera_mode(CAMERA_MODE_GRAYSCALE)
+
+                # 发送开始识别命令到Flask
+                control_msg = {
+                    "command": "start_recognition",
+                    "client_id": CLIENT_ID,
+                    "timestamp": time.ticks_ms()
+                }
+                publish_message_safe(FLASK_CONTROL_TOPIC, ujson.dumps(control_msg))
+                print("✅ 开启人脸识别recognition_on")
+
+        elif data == b'3':
+            if system_state == SYSTEM_STATE_RECOGNITION_ON:
+                # 关闭人脸识别但保持追踪
+                system_state = SYSTEM_STATE_RECOGNITION_OFF
+                set_led_state(LED_TRACKING)
+                # 保持灰度图模式
+                switch_camera_mode(CAMERA_MODE_GRAYSCALE)
+
+                # 发送停止识别命令到Flask
+                control_msg = {
+                    "command": "stop_recognition",
+                    "client_id": CLIENT_ID,
+                    "timestamp": time.ticks_ms()
+                }
+                publish_message_safe(FLASK_CONTROL_TOPIC, ujson.dumps(control_msg))
+                print("✅ 关闭人脸识别，保持追踪recognition_off")
+
+        elif data == b'4':
+            # 关闭摄像头并复位
+            system_state = SYSTEM_STATE_OFF
+            set_led_state(LED_OFF)
+            middle()
+            # 切换到彩色图模式
+            switch_camera_mode(CAMERA_MODE_COLOR)
+            # 重置人脸检测状态
+            last_face_detected = False
+            print("✅ 摄像头关闭，舵机复位camera_off")
+
+def main():
+    """主函数"""
+    global system_state
+
+    print("=== OpenMV EMQX追踪系统 ===")
+    print(f"客户端ID: {CLIENT_ID}")
+    print("系统状态:")
+    print("  0: 摄像头关闭")
+    print("  1: 摄像头准备")
+    print("  2: 摄像头开启不追踪")
+    print("  3: 人脸追踪开启")
+    print("  4: 人脸识别开启")
+    print("  5: 人脸识别关闭")
+
+    # 初始化硬件
+    if not init_camera(CAMERA_MODE_COLOR):  # 默认彩色模式
+        print("❌ 摄像头初始化失败，程序退出")
+        return
+
+    if not init_servos():
+        print("⚠️ 舵机初始化失败，继续运行")
+
+    if not init_face_cascade():
+        print("⚠️ 人脸检测初始化失败，继续运行")
+
+    if not init_led():
+        print("⚠️ LED初始化失败，继续运行")
+
+    if not init_uart():
+        print("⚠️ 串口初始化失败，继续运行")
+
+    set_led_state(LED_OFF)
+
+    if not connect_wifi():
+        print("❌ WiFi连接失败，程序退出")
+        return
+
+    if not connect_mqtt_socket():
+        print("❌ MQTT连接失败，程序退出")
+        return
+
+    print("\n🚀 系统就绪! 等待串口指令...")
+    print("串口指令:")
+    print("  0: 摄像头准备 / 开始追踪")
+    print("  1: 摄像头开启")
+    print("  2: 开启人脸识别")
+    print("  3: 关闭人脸识别")
+    print("  4: 关闭摄像头")
+
+    last_status_time = time.ticks_ms()
+    last_health_check = time.ticks_ms()
+
+    while True:
+        current_time = time.ticks_ms()
+        update_led()
+
+        # 处理串口命令
+        process_serial_command()
+
+        # 根据连接状态处理不同情况
+        if connect_state == CONNECT_STATE_ERROR:
+            if attempt_reconnect():
+                print("✅ 重连成功，恢复运行")
+            else:
+                time.sleep_ms(2000)
+        elif connect_state == CONNECT_STATE_RESETTING:
+            if attempt_system_reset():
+                print("✅ 系统重置成功")
+            else:
+                time.sleep_ms(2000)
+        else:
+            # 正常状态下的操作
+            check_and_process_messages()
+
+            # 根据系统状态执行相应操作
+            if system_state >= SYSTEM_STATE_CAMERA_ON:
+                # 状态2及以上发送视频流
+                send_frame()
+
+            if system_state >= SYSTEM_STATE_FACE_ON:
+                # 状态3及以上进行人脸追踪
+                face_tracking()
+
+            # 定期发送状态和健康检查
+            if time.ticks_diff(current_time, last_status_time) > 15000:
+                send_status()
+                gc.collect()
+                last_status_time = current_time
+
+            if time.ticks_diff(current_time, last_health_check) > 5000:
+                if not check_connection_health():
+                    print("⚠️ 连接健康状况不佳")
+                last_health_check = current_time
+
+        time.sleep_ms(int(1000 / TARGET_FPS))
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序错误:", e)
+        import sys
+        sys.print_exception(e)
+        set_led_state(LED_ERROR)
+        time.sleep(5000)
+        machine.reset()
+    finally:
+        if mqtt_socket:
+            try:
+                mqtt_socket.close()
+                print("已关闭MQTT Socket连接")
+            except:
+                pass
+        if 'red_led' in globals():
+            red_led.off()
+        if 'green_led' in globals():
+            green_led.off()
+        if 'blue_led' in globals():
+            blue_led.off()
+        print("程序结束")
+
+

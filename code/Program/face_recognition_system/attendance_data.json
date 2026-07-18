@@ -1,0 +1,108 @@
+[
+  {
+    "name": "lll",
+    "date": "2025-10-22",
+    "check_in": null,
+    "check_out": "16:21",
+    "status": "早退",
+    "work_duration": null,
+    "auto_status": true
+  },
+  {
+    "name": "俊",
+    "date": "2025-10-22",
+    "check_in": null,
+    "check_out": "18:33",
+    "status": "早退",
+    "work_duration": null,
+    "auto_status": true
+  },
+  {
+    "name": "lll",
+    "date": "2025-10-28",
+    "morning_check_in": "11:10",
+    "morning_check_out": null,
+    "afternoon_check_in": null,
+    "afternoon_check_out": null,
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  },
+  {
+    "name": "俊",
+    "date": "2025-10-29",
+    "morning_check_in": "10:27",
+    "morning_check_out": "11:15",
+    "afternoon_check_in": null,
+    "afternoon_check_out": null,
+    "status": "部分打卡",
+    "work_duration": "0小时48分钟",
+    "auto_status": true
+  },
+  {
+    "name": "lll",
+    "date": "2025-10-29",
+    "morning_check_in": "11:15",
+    "morning_check_out": null,
+    "afternoon_check_in": null,
+    "afternoon_check_out": "18:45",
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  },
+  {
+    "name": "俊",
+    "date": "2025-10-30",
+    "morning_check_in": "09:23",
+    "morning_check_out": "09:23",
+    "afternoon_check_in": null,
+    "afternoon_check_out": null,
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  },
+  {
+    "name": "SY",
+    "date": "2025-11-13",
+    "morning_check_in": null,
+    "morning_check_out": null,
+    "afternoon_check_in": "16:01",
+    "afternoon_check_out": "16:01",
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  },
+  {
+    "name": "SY",
+    "date": "2025-12-06",
+    "morning_check_in": "10:33",
+    "morning_check_out": null,
+    "afternoon_check_in": null,
+    "afternoon_check_out": null,
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  },
+  {
+    "name": "SY",
+    "date": "2025-12-11",
+    "morning_check_in": "11:23",
+    "morning_check_out": "11:26",
+    "afternoon_check_in": null,
+    "afternoon_check_out": "18:14",
+    "status": "部分打卡",
+    "work_duration": "0小时3分钟",
+    "auto_status": true
+  },
+  {
+    "name": "SY",
+    "date": "2025-12-20",
+    "morning_check_in": null,
+    "morning_check_out": null,
+    "afternoon_check_in": "14:44",
+    "afternoon_check_out": null,
+    "status": "部分打卡",
+    "work_duration": "0小时0分钟",
+    "auto_status": true
+  }
+]

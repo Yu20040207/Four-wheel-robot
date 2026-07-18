@@ -1,0 +1,12 @@
+2025-09-27 09:58:51.974 | INFO     | __main__:start:58 - 正在启动人脸识别MQTT服务...
+2025-09-27 09:58:51.975 | INFO     | face_recognizer:setup_models:22 - OpenCV版本: 4.5.5
+2025-09-27 09:58:51.975 | INFO     | face_recognizer:setup_models:26 - 尝试加载模型: C:\Users\86180\AppData\Local\Programs\Python\Python39\lib\site-packages\cv2\data\haarcascade_frontalface_alt.xml
+2025-09-27 09:58:51.999 | INFO     | face_recognizer:setup_models:47 - 分类器创建成功，进行验证...
+2025-09-27 09:58:53.017 | INFO     | face_recognizer:setup_models:54 - 分类器验证通过
+2025-09-27 09:58:53.018 | ERROR    | face_recognizer:setup_models:64 - 模型初始化失败: module 'cv2.face' has no attribute 'LBPHFaceRecognizer_create'
+2025-09-27 09:58:53.018 | INFO     | face_recognizer:setup_fallback_models:71 - 尝试备用模型初始化方案...
+2025-09-27 09:58:53.018 | INFO     | face_recognizer:setup_fallback_models:77 - 使用绝对路径: C:\Users\86180\AppData\Local\Programs\Python\Python39\lib\site-packages\cv2\data\haarcascade_frontalface_alt.xml
+2025-09-27 09:58:53.038 | SUCCESS  | face_recognizer:setup_fallback_models:81 - 备用方案1成功
+2025-09-27 09:58:53.038 | ERROR    | mqtt_client:setup_mqtt_client:53 - MQTT客户端初始化失败: 'int' object has no attribute 'encode'
+2025-09-27 09:58:53.038 | ERROR    | __main__:start:84 - 服务运行错误: 'int' object has no attribute 'encode'
+2025-09-27 09:58:53.038 | INFO     | __main__:stop:93 - 服务已停止

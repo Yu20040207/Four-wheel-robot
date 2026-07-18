@@ -1,0 +1,615 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>人体跟踪控制</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body {
+            background-color: #f8f9fa;
+            padding-top: 20px;
+        }
+
+        .card {
+            margin-bottom: 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+
+        .video-container {
+            background-color: #000;
+            border-radius: 5px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        #video-feed {
+            width: 100%;
+            max-height: 480px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            margin-right: 8px;
+        }
+
+        .status-active {
+            background-color: #28a745;
+            animation: pulse 1.5s infinite;
+        }
+
+        .status-inactive {
+            background-color: #dc3545;
+        }
+
+        @keyframes pulse {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+
+        .control-btn {
+            font-size: 1.2rem;
+            padding: 15px 20px;
+            margin: 5px;
+            min-width: 120px;
+        }
+
+        .btn-forward {
+            background-color: #28a745;
+            border-color: #28a745;
+        }
+
+        .btn-backward {
+            background-color: #dc3545;
+            border-color: #dc3545;
+        }
+
+        .btn-left {
+            background-color: #17a2b8;
+            border-color: #17a2b8;
+        }
+
+        .btn-right {
+            background-color: #ffc107;
+            border-color: #ffc107;
+            color: #000;
+        }
+
+        .btn-stop {
+            background-color: #6c757d;
+            border-color: #6c757d;
+        }
+
+        .command-history {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            font-family: monospace;
+            font-size: 12px;
+        }
+
+        .command-item {
+            padding: 3px 8px;
+            margin: 2px 0;
+            border-radius: 3px;
+            border-left: 4px solid;
+        }
+
+        .command-forward {
+            border-left-color: #28a745;
+            background-color: #d4edda;
+        }
+
+        .command-backward {
+            border-left-color: #dc3545;
+            background-color: #f8d7da;
+        }
+
+        .command-left {
+            border-left-color: #17a2b8;
+            background-color: #d1ecf1;
+        }
+
+        .command-right {
+            border-left-color: #ffc107;
+            background-color: #fff3cd;
+        }
+
+        .command-stop {
+            border-left-color: #6c757d;
+            background-color: #e2e3e5;
+        }
+
+        .param-slider {
+            width: 100%;
+        }
+
+        .param-value {
+            font-weight: bold;
+            color: #007bff;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .stat-item {
+            background: #e9ecef;
+            padding: 10px;
+            border-radius: 5px;
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #6c757d;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #343a40;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="row">
+            <div class="col-12">
+                <h1 class="text-center mb-4">
+                    <i class="fas fa-robot"></i> 人体跟踪控制
+                </h1>
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- 视频区域 -->
+            <div class="col-lg-8">
+                <div class="card">
+                    <div class="card-header bg-dark text-white">
+                        <i class="fas fa-video"></i> 实时视频
+                        <span class="float-end" id="fps-indicator">FPS: 0</span>
+                    </div>
+                    <div class="card-body p-0">
+                        <div class="video-container">
+                            <img id="video-feed" src="{{ url_for('video_feed') }}">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 手动控制 -->
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-gamepad"></i> 手动控制
+                    </div>
+                    <div class="card-body text-center">
+                        <div class="row mb-3">
+                            <div class="col-12">
+                                <button class="btn btn-forward control-btn" onclick="sendCommand('forward')">
+                                    <i class="fas fa-arrow-up"></i> 前进
+                                </button>
+                            </div>
+                        </div>
+                        <div class="row mb-3">
+                            <div class="col-4">
+                                <button class="btn btn-left control-btn" onclick="sendCommand('left')">
+                                    <i class="fas fa-arrow-left"></i> 左转
+                                </button>
+                            </div>
+                            <div class="col-4">
+                                <button class="btn btn-stop control-btn" onclick="sendCommand('stop')">
+                                    <i class="fas fa-stop"></i> 停止
+                                </button>
+                            </div>
+                            <div class="col-4">
+                                <button class="btn btn-right control-btn" onclick="sendCommand('right')">
+                                    <i class="fas fa-arrow-right"></i> 右转
+                                </button>
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col-12">
+                                <button class="btn btn-backward control-btn" onclick="sendCommand('backward')">
+                                    <i class="fas fa-arrow-down"></i> 后退
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 控制面板 -->
+            <div class="col-lg-4">
+                <!-- 跟踪控制 -->
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-cogs"></i> 跟踪控制
+                    </div>
+                    <div class="card-body">
+                        <div class="d-grid gap-2 mb-3">
+                            <button class="btn btn-success" onclick="startTracking()" id="btn-start">
+                                <i class="fas fa-play"></i> 开始跟踪
+                            </button>
+                            <button class="btn btn-warning" onclick="stopTracking()" id="btn-stop">
+                                <i class="fas fa-pause"></i> 停止跟踪
+                            </button>
+                            <button class="btn btn-danger" onclick="disableTracking()" id="btn-disable">
+                                <i class="fas fa-stop"></i> 禁用跟踪
+                            </button>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">跟踪状态:</label>
+                            <div class="d-flex align-items-center">
+                                <span class="status-indicator" id="tracking-status-indicator"></span>
+                                <span id="tracking-status-text">未知</span>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">最后指令:</label>
+                            <div>
+                                <span class="badge bg-info fs-6" id="last-command">无</span>
+                            </div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">指令时间:</label>
+                            <div id="command-time">-</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 控制参数 -->
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-sliders-h"></i> 控制参数
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label class="form-label">
+                                中心区域阈值: <span class="param-value" id="center-value">0.15</span>
+                            </label>
+                            <input type="range" class="form-range param-slider" min="0.05" max="0.3" step="0.01"
+                                   value="0.15" id="center-slider" onchange="updateCenterThreshold(this.value)">
+                            <div class="form-text">控制目标在中心区域的范围</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">
+                                最小面积比: <span class="param-value" id="min-area-value">0.05</span>
+                            </label>
+                            <input type="range" class="form-range param-slider" min="0.01" max="0.15" step="0.01"
+                                   value="0.05" id="min-area-slider" onchange="updateMinArea(this.value)">
+                            <div class="form-text">小于此值则前进</div>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label">
+                                最大面积比: <span class="param-value" id="max-area-value">0.25</span>
+                            </label>
+                            <input type="range" class="form-range param-slider" min="0.15" max="0.5" step="0.01"
+                                   value="0.25" id="max-area-slider" onchange="updateMaxArea(this.value)">
+                            <div class="form-text">大于此值则后退</div>
+                        </div>
+
+                        <button class="btn btn-outline-primary w-100" onclick="updateAllParams()">
+                            <i class="fas fa-sync-alt"></i> 应用所有参数
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 统计信息 -->
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-chart-bar"></i> 统计信息
+                    </div>
+                    <div class="card-body">
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-label">检测到人数</div>
+                                <div class="stat-value" id="detected-count">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">跟踪人数</div>
+                                <div class="stat-value" id="tracking-count">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">FPS</div>
+                                <div class="stat-value" id="tracking-fps">0</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">检测时间</div>
+                                <div class="stat-value" id="detection-time">0ms</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 指令历史 -->
+        <div class="row">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-header">
+                        <i class="fas fa-history"></i> 指令历史
+                        <button class="btn btn-sm btn-outline-secondary float-end" onclick="clearHistory()">
+                            <i class="fas fa-trash"></i> 清空
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div id="command-history" class="command-history">
+                            <!-- 指令历史将在这里显示 -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap JS -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- jQuery -->
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+
+    <script>
+        // 全局变量
+        let trackingStatus = false;
+        let trackingActive = false;
+        let commandHistory = [];
+        let statusInterval;
+        let statsInterval;
+
+        // 页面加载完成
+        $(document).ready(function() {
+            // 初始加载状态
+            loadTrackingStatus();
+
+            // 开始状态更新
+            statusInterval = setInterval(loadTrackingStatus, 2000);
+            statsInterval = setInterval(loadTrackingStats, 1000);
+
+            // 加载指令历史
+            loadCommandHistory();
+        });
+
+        // 加载跟踪状态
+        function loadTrackingStatus() {
+            $.get('/api/human_tracking/status', function(data) {
+                trackingStatus = data.tracking_enabled;
+                trackingActive = data.tracking_active;
+
+                // 更新状态显示
+                updateStatusDisplay(data);
+
+                // 更新统计信息
+                updateStatsDisplay(data);
+            }).fail(function() {
+                console.log('获取跟踪状态失败');
+            });
+        }
+
+        // 加载统计信息
+        function loadTrackingStats() {
+            $.get('/api/human_tracking/status', function(data) {
+                updateStatsDisplay(data);
+            });
+        }
+
+        // 加载指令历史
+        function loadCommandHistory() {
+            $.get('/api/human_tracking/history', function(data) {
+                if (data.status === 'success') {
+                    updateCommandHistory(data.history);
+                }
+            });
+        }
+
+        // 更新状态显示
+        function updateStatusDisplay(data) {
+            const statusIndicator = $('#tracking-status-indicator');
+            const statusText = $('#tracking-status-text');
+
+            if (data.tracking_active) {
+                statusIndicator.removeClass('status-inactive').addClass('status-active');
+                statusText.text('跟踪中');
+                $('#btn-start').prop('disabled', true);
+                $('#btn-stop').prop('disabled', false);
+            } else if (data.tracking_enabled) {
+                statusIndicator.removeClass('status-active').addClass('status-inactive');
+                statusText.text('已启用（未跟踪）');
+                $('#btn-start').prop('disabled', false);
+                $('#btn-stop').prop('disabled', true);
+            } else {
+                statusIndicator.removeClass('status-active').addClass('status-inactive');
+                statusText.text('已禁用');
+                $('#btn-start').prop('disabled', false);
+                $('#btn-stop').prop('disabled', true);
+            }
+
+            // 更新最后指令
+            if (data.stats && data.stats.last_control_command) {
+                $('#last-command').text(data.stats.last_control_command.toUpperCase());
+                const time = new Date(data.stats.last_control_time * 1000);
+                $('#command-time').text(time.toLocaleTimeString());
+
+                // 添加到指令历史
+                addToCommandHistory({
+                    command: data.stats.last_control_command,
+                    time: data.stats.last_control_time,
+                    message: data.stats.last_control_command
+                });
+            }
+
+            // 更新FPS
+            if (data.stats && data.stats.fps) {
+                $('#fps-indicator').text('FPS: ' + data.stats.fps.toFixed(1));
+            }
+        }
+
+        // 更新统计显示
+        function updateStatsDisplay(data) {
+            $('#detected-count').text(data.detected_count || 0);
+            $('#tracking-count').text(data.tracking_count || 0);
+
+            if (data.stats) {
+                $('#tracking-fps').text(data.stats.fps ? data.stats.fps.toFixed(1) : '0');
+                $('#detection-time').text(data.stats.detection_time ? data.stats.detection_time.toFixed(1) + 'ms' : '0ms');
+            }
+        }
+
+        // 更新指令历史
+        function updateCommandHistory(history) {
+            const container = $('#command-history');
+            container.empty();
+
+            // 按时间排序（最新的在前面）
+            history.sort((a, b) => b.time - a.time);
+
+            history.forEach(item => {
+                const timeStr = item.time_str || new Date(item.time * 1000).toLocaleTimeString();
+                const div = $('<div class="command-item"></div>');
+                div.addClass(`command-${item.command}`);
+                div.html(`<strong>${timeStr}</strong> - ${item.command.toUpperCase()}`);
+                container.append(div);
+            });
+        }
+
+        // 添加到指令历史
+        function addToCommandHistory(item) {
+            // 避免重复记录相同指令（相同指令间隔小于1秒）
+            if (commandHistory.length > 0) {
+                const lastItem = commandHistory[0];
+                if (lastItem.command === item.command &&
+                    item.time - lastItem.time < 1) {
+                    return;
+                }
+            }
+
+            commandHistory.unshift(item);
+            if (commandHistory.length > 20) {
+                commandHistory.pop();
+            }
+
+            updateCommandHistory(commandHistory);
+        }
+
+        // 控制函数
+        function startTracking() {
+            $.get('/api/human_tracking/start_tracking', function(data) {
+                if (data.status === 'success') {
+                    loadTrackingStatus();
+                }
+            });
+        }
+
+        function stopTracking() {
+            $.get('/api/human_tracking/stop_tracking', function(data) {
+                if (data.status === 'success') {
+                    loadTrackingStatus();
+                }
+            });
+        }
+
+        function disableTracking() {
+            $.get('/api/human_tracking/disable', function(data) {
+                if (data.status === 'success') {
+                    loadTrackingStatus();
+                }
+            });
+        }
+
+        function sendCommand(command) {
+            $.get(`/api/human_tracking/send_command/${command}`, function(data) {
+                if (data.status === 'success') {
+                    console.log('指令发送成功:', command);
+                }
+            });
+        }
+
+        // 参数控制
+        function updateCenterThreshold(value) {
+            $('#center-value').text(value);
+        }
+
+        function updateMinArea(value) {
+            $('#min-area-value').text(value);
+        }
+
+        function updateMaxArea(value) {
+            $('#max-area-value').text(value);
+        }
+
+        function updateAllParams() {
+            const params = {
+                center_threshold: parseFloat($('#center-slider').val()),
+                min_area: parseFloat($('#min-area-slider').val()),
+                max_area: parseFloat($('#max-area-slider').val())
+            };
+
+            $.ajax({
+                url: '/api/human_tracking/control_params',
+                type: 'POST',
+                contentType: 'application/json',
+                data: JSON.stringify(params),
+                success: function(data) {
+                    if (data.status === 'success') {
+                        alert('参数更新成功！');
+                    }
+                }
+            });
+        }
+
+        function clearHistory() {
+            commandHistory = [];
+            updateCommandHistory([]);
+        }
+
+        // 键盘控制
+        $(document).keydown(function(e) {
+            switch(e.key) {
+                case 'ArrowUp':
+                    sendCommand('forward');
+                    e.preventDefault();
+                    break;
+                case 'ArrowDown':
+                    sendCommand('backward');
+                    e.preventDefault();
+                    break;
+                case 'ArrowLeft':
+                    sendCommand('left');
+                    e.preventDefault();
+                    break;
+                case 'ArrowRight':
+                    sendCommand('right');
+                    e.preventDefault();
+                    break;
+                case ' ':
+                    sendCommand('stop');
+                    e.preventDefault();
+                    break;
+            }
+        });
+
+        // 页面卸载时清理
+        $(window).on('beforeunload', function() {
+            clearInterval(statusInterval);
+            clearInterval(statsInterval);
+        });
+    </script>
+</body>
+</html>

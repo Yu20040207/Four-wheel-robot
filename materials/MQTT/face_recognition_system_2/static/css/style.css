@@ -1,0 +1,528 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Arial', sans-serif;
+    background-color: #f5f5f5;
+    color: #333;
+    line-height: 1.6;
+}
+
+.navbar {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    padding: 1rem 0;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+}
+
+.nav-container {
+    max-width: 1200px;
+    margin: 0 auto;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0 2rem;
+}
+
+.nav-title {
+    font-size: 1.5rem;
+    font-weight: bold;
+}
+
+.nav-menu {
+    display: flex;
+    list-style: none;
+    gap: 2rem;
+}
+
+.nav-menu a {
+    color: white;
+    text-decoration: none;
+    padding: 0.5rem 1rem;
+    border-radius: 5px;
+    transition: background-color 0.3s;
+}
+
+.nav-menu a:hover {
+    background-color: rgba(255,255,255,0.2);
+}
+
+.main-content {
+    max-width: 1200px;
+    margin: 2rem auto;
+    padding: 0 2rem;
+}
+
+.footer {
+    text-align: center;
+    padding: 2rem;
+    margin-top: 3rem;
+    border-top: 1px solid #ddd;
+    color: #666;
+}
+
+.container {
+    background: white;
+    border-radius: 10px;
+    padding: 2rem;
+    box-shadow: 0 2px 20px rgba(0,0,0,0.1);
+    margin-bottom: 2rem;
+}
+
+.video-section h2 {
+    margin-bottom: 1rem;
+    color: #333;
+}
+
+.video-container {
+    background: #000;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 1.5rem;
+}
+
+.video-stream {
+    width: 100%;
+    height: auto;
+    display: block;
+}
+
+.control-panel {
+    display: flex;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 2rem;
+}
+
+.btn {
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    font-weight: bold;
+    transition: all 0.3s;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-primary { background-color: #007bff; color: white; }
+.btn-secondary { background-color: #6c757d; color: white; }
+.btn-success { background-color: #28a745; color: white; }
+.btn-danger { background-color: #dc3545; color: white; }
+.btn-warning { background-color: #ffc107; color: #212529; }
+
+.btn:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+}
+
+.btn-small {
+    padding: 0.4rem 0.8rem;
+    font-size: 0.8rem;
+}
+
+.stats-section h3 {
+    margin-bottom: 1rem;
+    color: #333;
+}
+
+.stats-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 1rem;
+}
+
+.stat-item {
+    background: #f8f9fa;
+    padding: 1rem;
+    border-radius: 8px;
+    border-left: 4px solid #007bff;
+}
+
+.stat-label {
+    font-weight: bold;
+    display: block;
+    color: #666;
+    font-size: 0.9rem;
+}
+
+.stat-value {
+    font-size: 1.2rem;
+    font-weight: bold;
+    color: #333;
+}
+
+.add-face-section {
+    margin-top: 2rem;
+    padding-top: 2rem;
+    border-top: 1px solid #eee;
+}
+
+.add-face-form {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+}
+
+.name-input {
+    padding: 0.75rem;
+    border: 2px solid #ddd;
+    border-radius: 5px;
+    font-size: 1rem;
+    min-width: 200px;
+}
+
+.name-input:focus {
+    outline: none;
+    border-color: #007bff;
+}
+
+.message {
+    padding: 0.75rem;
+    border-radius: 5px;
+    margin-top: 0.5rem;
+}
+
+.message.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.message.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.faces-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 1.5rem;
+    margin-top: 2rem;
+}
+
+.face-card {
+    background: #f8f9fa;
+    border-radius: 10px;
+    padding: 1.5rem;
+    border: 1px solid #e9ecef;
+    transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.face-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.1);
+}
+
+.face-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 1px solid #dee2e6;
+}
+
+.face-header h3 {
+    color: #333;
+    margin: 0;
+}
+
+.face-info p {
+    margin-bottom: 0.5rem;
+    color: #666;
+}
+
+.face-images {
+    margin-top: 1rem;
+}
+
+.image-item {
+    background: white;
+    padding: 0.5rem;
+    margin-bottom: 0.5rem;
+    border-radius: 5px;
+    border-left: 3px solid #28a745;
+}
+
+.image-item span {
+    font-weight: bold;
+    display: block;
+}
+
+.image-item small {
+    color: #999;
+    font-size: 0.8rem;
+}
+
+.no-faces {
+    text-align: center;
+    padding: 3rem;
+    color: #666;
+    grid-column: 1 / -1;
+}
+
+@media (max-width: 768px) {
+    .nav-container {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .control-panel {
+        flex-direction: column;
+    }
+
+    .add-face-form {
+        flex-direction: column;
+    }
+
+    .name-input {
+        min-width: auto;
+    }
+}
+/* 添加进度条样式 */
+.progress-container {
+    margin-top: 1rem;
+    width: 100%;
+}
+
+.progress-bar {
+    width: 100%;
+    height: 20px;
+    background-color: #e9ecef;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #ffc107, #fd7e14);
+    transition: width 0.3s ease;
+    border-radius: 10px;
+}
+
+.progress-text {
+    text-align: center;
+    margin-top: 0.5rem;
+    font-weight: bold;
+    color: #495057;
+}
+
+.collection-info {
+    margin-bottom: 1rem;
+    padding: 1rem;
+    background-color: #f8f9fa;
+    border-radius: 5px;
+    border-left: 4px solid #6c757d;
+}
+
+/* 编辑名字输入框样式 */
+.name-edit-input {
+    padding: 0.25rem 0.5rem;
+    border: 2px solid #007bff;
+    border-radius: 4px;
+    font-size: 1.2rem;
+    font-weight: bold;
+    width: 150px;
+}
+
+.name-edit-input:focus {
+    outline: none;
+    border-color: #0056b3;
+}
+
+/* 消息提示样式 */
+.message {
+    padding: 0.75rem;
+    border-radius: 5px;
+    margin-top: 0.5rem;
+    transition: all 0.3s ease;
+}
+
+.message.success {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+.message.error {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+.message.info {
+    background-color: #d1ecf1;
+    color: #0c5460;
+    border: 1px solid #bee5eb;
+}
+
+/* 可编辑名字的悬停效果 */
+.editable-name:hover {
+    background-color: #f8f9fa;
+    cursor: pointer;
+    border-radius: 4px;
+    padding: 2px 4px;
+}
+
+/* 响应式调整 */
+@media (max-width: 768px) {
+    .control-panel {
+        flex-direction: column;
+    }
+
+    .add-face-form {
+        flex-direction: column;
+    }
+
+    .name-input {
+        min-width: auto;
+    }
+}
+/* 下拉框状态样式 */
+.status-select.border-success {
+    border-color: #28a745 !important;
+}
+
+.status-select.border-warning {
+    border-color: #ffc107 !important;
+}
+
+.status-select.border-danger {
+    border-color: #dc3545 !important;
+}
+
+.status-select.border-secondary {
+    border-color: #6c757d !important;
+}
+
+/* 下拉框基础样式 */
+.status-select {
+    min-width: 120px;
+    border-radius: 8px;
+    border: 2px solid #e9ecef;
+    transition: all 0.3s ease;
+    font-weight: 500;
+    padding: 6px 12px;
+}
+
+.status-select:focus {
+    border-color: #2196f3;
+    box-shadow: 0 0 0 0.2rem rgba(33, 150, 243, 0.25);
+}
+
+.status-select option {
+    font-weight: 500;
+    padding: 8px;
+}
+
+/* 下拉框状态样式 */
+.status-select.border-success {
+    border-color: #28a745 !important;
+}
+
+.status-select.border-warning {
+    border-color: #ffc107 !important;
+}
+
+.status-select.border-danger {
+    border-color: #dc3545 !important;
+}
+
+.status-select.border-secondary {
+    border-color: #6c757d !important;
+}
+
+/* 状态徽章样式 */
+.status-badge {
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 14px;
+    font-weight: 600;
+    border: 2px solid transparent;
+}
+
+.status-normal {
+    background: #e8f5e8;
+    color: #2e7d32;
+    border-color: #4caf50;
+}
+
+.status-late {
+    background: #fff8e1;
+    color: #f57c00;
+    border-color: #ff9800;
+}
+
+.status-early {
+    background: #ffebee;
+    color: #c62828;
+    border-color: #f44336;
+}
+
+.status-absent {
+    background: #f5f5f5;
+    color: #616161;
+    border-color: #9e9e9e;
+}
+
+/* 人脸识别状态样式 */
+.recognition-status {
+    border-left: 4px solid #6c757d;
+    background: linear-gradient(135deg, #f8f9fa, #e9ecef);
+}
+
+.recognition-status.active {
+    border-left-color: #28a745;
+    background: linear-gradient(135deg, #f8fff9, #e8f5e9);
+}
+
+/* 在现有的CSS中添加以下样式 */
+.add-face-form .btn-group {
+    display: flex;
+    margin-top: 10px;
+}
+
+.add-face-form .btn-group button {
+    margin-right: 5px;
+    border-radius: 4px;
+    padding: 10px 15px;
+    border: none;
+    cursor: pointer;
+    font-weight: bold;
+    transition: all 0.3s ease;
+}
+
+.add-face-form .btn-group button:last-child {
+    margin-right: 0;
+}
+
+#addFace {
+    background-color: #ffc107; /* 黄色，与btn-warning对应 */
+    color: #212529;
+}
+
+#addFace:hover {
+    background-color: #e0a800;
+}
+
+#cancelCollection {
+    background-color: #dc3545; /* 红色，与btn-danger对应 */
+    color: white;
+}
+
+#cancelCollection:hover {
+    background-color: #c82333;
+}
+
+#cancelCollection:disabled {
+    background-color: #6c757d;
+    cursor: not-allowed;
+    opacity: 0.65;
+}

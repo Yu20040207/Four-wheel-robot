@@ -1,0 +1,172 @@
+def main():
+    """主函数"""
+    global frame_count, system_state, connect_state
+    global last_message_check, last_frame_time
+
+    print("=== OpenMV 视频流与跟踪系统 ===")
+    print(f"客户端ID: {CLIENT_ID}")
+
+    # 初始化硬件
+    if not init_camera():
+        blink_red_and_reset()
+    if not init_servos():
+        blink_red_and_reset()
+    init_led()
+
+    # LED闪烁指示启动
+    for i in range(3):
+        green_led.on()
+        time.sleep_ms(200)
+        green_led.off()
+        time.sleep_ms(200)
+
+    set_led_state(SYSTEM_STATE_OFF)
+    print("✅ 系统已启动，等待控制指令...")
+
+    # 连接网络和MQTT
+    if not connect_wifi():
+        blink_red_and_reset()
+    if not connect_mqtt():
+        blink_red_and_reset()
+
+    print("\n🚀 系统就绪!")
+
+    # 发送就绪状态
+    status_msg = {
+        "status": "ready",
+        "client_id": CLIENT_ID,
+        "timestamp": time.ticks_ms(),
+        "message": "系统就绪，等待控制指令"
+    }
+    publish_message_safe(STATUS_TOPIC, ujson.dumps(status_msg), qos=0)
+
+    # 初始化时间变量
+    current_time = time.ticks_ms()
+    last_status_time = current_time
+    last_frame_time = current_time
+    last_reconnect_attempt = current_time
+    last_led_blink = current_time
+    last_message_check = current_time
+
+    # 设置初始标志，忽略启动时的保留消息
+    ignore_initial_messages = True
+    initial_message_ignore_time = current_time + 5000  # 增加到5秒
+
+    reconnect_interval = 5000
+    led_blink_interval = 500
+    led_blink_state = False
+    frame_counter = 0
+    message_check_counter = 0
+
+    print("🎯 进入事件循环...")
+    print("📋 可用命令: 0(准备/追踪), 1(开启不追踪), 2(识别), 3(追踪), 4(打卡开), 5(打卡关), 6(关闭), 7(舵机复位), 8(人脸采集), 9(开启人体跟踪), A(关闭人体跟踪)")
+
+    # 新增：清空初始队列
+    pending_commands.clear()
+    
+    # 新增：启动延迟，避免处理保留消息
+    print("⏳ 启动延迟5秒，避免处理保留消息...")
+    startup_delay_end = current_time + 5000
+
+    while True:
+        current_time = time.ticks_ms()
+
+        # 检查是否过了初始忽略期
+        if ignore_initial_messages and time.ticks_diff(current_time, initial_message_ignore_time) > 0:
+            ignore_initial_messages = False
+            print("✅ 初始消息忽略期结束，开始正常处理消息")
+
+        # 检查启动延迟
+        if time.ticks_diff(current_time, startup_delay_end) < 0:
+            # 启动延迟期间，清空所有收到的消息
+            try:
+                mqtt_socket.setblocking(False)
+                while True:
+                    try:
+                        data = mqtt_socket.recv(512)
+                        if not data:
+                            break
+                    except:
+                        break
+                mqtt_socket.setblocking(True)
+            except:
+                pass
+            continue
+
+        # 消息检查 - 这是您缺少的关键部分！
+        message_check_counter += 1
+        if time.ticks_diff(current_time, last_message_check) > 2:
+            messages_found = False
+            for i in range(5):
+                if check_messages():
+                    messages_found = True
+            # 处理所有待处理命令
+            if not ignore_initial_messages:
+                if process_pending_commands():
+                    print("⚡ 命令处理完成")
+            last_message_check = current_time
+
+        # 处理连接状态
+        if connect_state == 1:
+            if time.ticks_diff(current_time, last_reconnect_attempt) > reconnect_interval:
+                if attempt_reconnect():
+                    if system_state >= SYSTEM_STATE_ON:
+                        status_msg = {
+                            "status": "reconnected",
+                            "system_state": system_state,
+                            "client_id": CLIENT_ID,
+                            "timestamp": current_time,
+                            "message": "重新连接成功，恢复视频流"
+                        }
+                        publish_message_safe(STATUS_TOPIC, ujson.dumps(status_msg), qos=0)
+                else:
+                    blink_red_and_reset()
+                last_reconnect_attempt = current_time
+
+        # 视频流处理
+        elif connect_state == 0:
+            if system_state >= SYSTEM_STATE_ON:
+                if time.ticks_diff(current_time, last_frame_time) > 50:
+                    if send_video_frame():
+                        frame_counter += 1
+                    last_frame_time = current_time
+
+            # 人脸跟踪
+            if system_state >= SYSTEM_STATE_FACE_TRACKING:
+                face_tracking()
+
+            # 定期发送状态
+            if time.ticks_diff(current_time, last_status_time) > 10000:
+                send_status()
+                gc.collect()
+                last_status_time = current_time
+                # 打印性能统计
+                fps = frame_counter / 10
+                frame_counter = 0
+                message_check_counter = 0
+                print(f"📊 性能统计: {fps:.1f} FPS, 队列命令: {len(pending_commands)}, 系统状态: {system_state}, 人体跟踪: {'开启' if human_tracking_enabled else '关闭'}")
+
+        # 识别状态下的LED闪烁
+        if system_state == SYSTEM_STATE_start_recognition:
+            if time.ticks_diff(current_time, last_led_blink) > led_blink_interval:
+                led_blink_state = not led_blink_state
+                blue_led.on() if led_blink_state else blue_led.off()
+                last_led_blink = current_time
+        # 人体跟踪状态下的LED指示
+        elif human_tracking_enabled:
+            if time.ticks_diff(current_time, last_led_blink) > 300:  # 更快的闪烁频率
+                led_blink_state = not led_blink_state
+                if led_blink_state:
+                    blue_led.on()
+                    red_led.off()
+                else:
+                    blue_led.off()
+                    red_led.on()
+                last_led_blink = current_time
+        else:
+            # 非人体跟踪状态，恢复LED状态
+            set_led_state(system_state)
+
+        # 极短延迟
+        time.sleep_ms(1)
+        

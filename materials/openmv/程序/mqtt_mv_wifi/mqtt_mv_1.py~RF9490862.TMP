@@ -1,0 +1,368 @@
+# OpenMV MQTT Video Stream (超稳定版)
+import sensor
+import time
+import network
+from mqtt import MQTTClient
+import ubinascii
+import random
+import gc
+
+# ===== 配置区域 =====
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX MQTT服务器配置
+MQTT_BROKER = "192.168.13.225"
+MQTT_PORT = 1883
+MQTT_USERNAME = "sy"
+MQTT_PASSWORD = "123"
+
+# MQTT主题配置
+VIDEO_TOPIC = "openmv/video"
+STATUS_TOPIC = "openmv/status"
+CONTROL_TOPIC = "openmv/control"
+
+# 视频流配置
+FRAME_SIZE = sensor.QQVGA  # 160x120
+FRAME_QUALITY = 40
+TARGET_FPS = 2
+MAX_FRAME_SIZE = 3000
+
+# ===== 全局变量 =====
+wlan = None
+mqtt_client = None
+frame_count = 0
+is_streaming = True
+client_id = None
+last_successful_frame_time = 0
+
+def init_camera():
+    """初始化摄像头"""
+    sensor.reset()
+    sensor.set_pixformat(sensor.RGB565)
+    sensor.set_framesize(FRAME_SIZE)
+    sensor.skip_frames(20)
+    sensor.set_auto_whitebal(False)
+    sensor.set_auto_gain(False)
+    sensor.set_auto_exposure(False, exposure_us=10000)
+    print("摄像头初始化完成")
+    print("分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+def connect_wifi():
+    """连接WiFi"""
+    global wlan
+
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+
+    print("连接WiFi: {}...".format(SSID))
+
+    if wlan.isconnected():
+        wlan.disconnect()
+        time.sleep(1)
+
+    wlan.connect(SSID, KEY)
+
+    timeout = 30
+    while not wlan.isconnected() and timeout > 0:
+        time.sleep_ms(500)
+        timeout -= 1
+        print(".", end="")
+
+    if wlan.isconnected():
+        print("\nWiFi连接成功!")
+        print("IP地址:", wlan.ifconfig()[0])
+        return True
+    else:
+        print("\nWiFi连接失败!")
+        return False
+
+def mqtt_callback(topic, message):
+    """MQTT消息回调函数"""
+    global is_streaming
+    try:
+        topic_str = topic.decode() if isinstance(topic, bytes) else str(topic)
+        msg_str = message.decode() if isinstance(message, bytes) else str(message)
+
+        print("收到控制命令: {}".format(msg_str))
+
+        if topic_str == CONTROL_TOPIC or topic_str.endswith(CONTROL_TOPIC):
+            command = msg_str.lower().strip()
+            if command == "start":
+                is_streaming = True
+                print("开始视频流")
+            elif command == "stop":
+                is_streaming = False
+                print("停止视频流")
+    except Exception as e:
+        print("处理MQTT回调错误:", e)
+
+def generate_client_id():
+    """生成唯一的客户端ID"""
+    random_id = random.getrandbits(32)
+    return "openmv_{:08x}".format(random_id)
+
+def connect_mqtt():
+    """连接MQTT服务器"""
+    global mqtt_client, client_id
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            client_id = generate_client_id()
+
+            print("MQTT连接尝试 {}/{}".format(attempt + 1, max_retries))
+
+            # 使用更简单的MQTT客户端配置
+            mqtt_client = MQTTClient(
+                client_id,
+                MQTT_BROKER,
+                port=MQTT_PORT,
+                user=MQTT_USERNAME,
+                password=MQTT_PASSWORD,
+                keepalive=60
+            )
+
+            mqtt_client.set_callback(mqtt_callback)
+
+            print("连接MQTT服务器...")
+            mqtt_client.connect()
+
+            print("订阅控制主题...")
+            mqtt_client.subscribe(CONTROL_TOPIC)
+
+            print("MQTT连接成功!")
+            return True
+
+        except Exception as e:
+            print("MQTT连接失败:", e)
+
+            if attempt < max_retries - 1:
+                wait_time = (attempt + 1) * 2
+                print("等待{}秒后重试...".format(wait_time))
+                time.sleep(wait_time)
+
+    return False
+
+def send_frame_robust(jpeg_data, frame_id):
+    """稳健的帧发送函数"""
+    global mqtt_client
+
+    max_send_attempts = 2
+    for attempt in range(max_send_attempts):
+        try:
+            frame_size = len(jpeg_data)
+            if frame_size > MAX_FRAME_SIZE:
+                print("帧太大，跳过")
+                return False
+
+            # 简单的消息格式: 帧ID + 数据
+            message = "{}|".format(frame_id).encode() + jpeg_data
+
+            mqtt_client.publish(VIDEO_TOPIC, message)
+            return True
+
+        except Exception as e:
+            print("发送帧失败 (尝试 {}/{}): {}".format(attempt + 1, max_send_attempts, e))
+
+            if attempt < max_send_attempts - 1:
+                time.sleep_ms(500)
+
+    return False
+
+def send_status():
+    """发送状态信息"""
+    global mqtt_client
+
+    try:
+        status = "STATUS|frames:{}|mem:{}".format(frame_count, gc.mem_free())
+        mqtt_client.publish(STATUS_TOPIC, status)
+        return True
+    except Exception as e:
+        print("发送状态失败:", e)
+        return False
+
+def check_connection_simple():
+    """简单的连接检查"""
+    global mqtt_client
+
+    try:
+        # 尝试发送一个小的心跳包
+        mqtt_client.publish("openmv/heartbeat", "alive")
+        return True
+    except:
+        return False
+
+def safe_check_msg():
+    """安全的消息检查，忽略EIO错误"""
+    global mqtt_client
+
+    try:
+        mqtt_client.check_msg()
+        return True
+    except Exception as e:
+        # 忽略EIO错误，这是OpenMV上常见的非致命错误
+        if "EIO" not in str(e):
+            print("检查消息时出错:", e)
+        return False
+
+def stream_video_ultra_stable():
+    """超稳定的视频流传输"""
+    global frame_count, is_streaming, last_successful_frame_time
+
+    print("开始超稳定视频流传输...")
+    print("目标FPS: {}".format(TARGET_FPS))
+
+    last_status_time = time.ticks_ms()
+    last_connection_check = time.ticks_ms()
+    consecutive_failures = 0
+    max_consecutive_failures = 5
+
+    # 初始成功时间
+    last_successful_frame_time = time.ticks_ms()
+
+    while True:
+        try:
+            current_time = time.ticks_ms()
+
+            # 每10秒检查一次连接
+            if time.ticks_diff(current_time, last_connection_check) > 10000:
+                if not check_connection_simple():
+                    print("连接可能断开，尝试重连...")
+                    if not reconnect_mqtt():
+                        print("重连失败，暂停流传输")
+                        is_streaming = False
+                        time.sleep_ms(5000)  # 等待5秒后重试连接
+                        continue
+                last_connection_check = current_time
+
+            # 安全地检查消息（忽略EIO错误）
+            safe_check_msg()
+
+            if not is_streaming:
+                time.sleep_ms(1000)
+                continue
+
+            # 捕获和压缩图像
+            img = sensor.snapshot()
+            jpeg_data = img.compress(quality=FRAME_QUALITY)
+
+            if not isinstance(jpeg_data, bytes):
+                jpeg_data = bytes(jpeg_data)
+
+            # 发送帧
+            success = send_frame_robust(jpeg_data, frame_count)
+
+            if success:
+                frame_count += 1
+                consecutive_failures = 0
+                last_successful_frame_time = time.ticks_ms()
+
+                # 每10帧输出一次状态
+                if frame_count % 10 == 0:
+                    print("已发送 {} 帧".format(frame_count))
+            else:
+                consecutive_failures += 1
+                print("发送失败 {} 次".format(consecutive_failures))
+
+                if consecutive_failures >= max_consecutive_failures:
+                    print("连续失败过多，暂停流传输")
+                    is_streaming = False
+                    time.sleep_ms(3000)
+                    consecutive_failures = 0
+                    continue
+
+            # 定期发送状态和垃圾回收
+            if time.ticks_diff(current_time, last_status_time) > 15000:
+                send_status()
+                gc.collect()
+                print("状态: 帧数={}, 内存={}字节".format(frame_count, gc.mem_free()))
+                last_status_time = current_time
+
+            # 控制帧率
+            frame_interval = max(400, int(1000 / TARGET_FPS))
+            time.sleep_ms(frame_interval)
+
+        except Exception as e:
+            print("视频流主循环错误:", e)
+            time.sleep_ms(5000)
+
+def reconnect_mqtt():
+    """重新连接MQTT"""
+    global mqtt_client
+
+    print("尝试重新连接MQTT...")
+
+    try:
+        if mqtt_client:
+            mqtt_client.disconnect()
+    except:
+        pass
+
+    mqtt_client = None
+    time.sleep(2)
+
+    return connect_mqtt()
+
+def main_loop():
+    """主循环"""
+    global frame_count
+
+    print("=== OpenMV MQTT视频流 (超稳定版) ===")
+
+    # 初始化硬件
+    init_camera()
+
+    # 连接WiFi
+    if not connect_wifi():
+        print("WiFi连接失败，程序退出")
+        return
+
+    # 连接MQTT
+    if not connect_mqtt():
+        print("MQTT连接失败，程序退出")
+        return
+
+    print("系统就绪!")
+    print("发送 'start' 到 {} 主题开始视频流".format(CONTROL_TOPIC))
+    print("发送 'stop' 到 {} 主题停止视频流".format(CONTROL_TOPIC))
+
+    # 开始视频流
+    frame_count = 0
+    stream_video_ultra_stable()
+
+# 带自动恢复的主函数
+def main():
+    restart_count = 0
+    max_restarts = 5
+
+    while restart_count < max_restarts:
+        try:
+            print("\n" + "="*50)
+            print("启动 OpenMV MQTT 视频流 (第{}次)".format(restart_count + 1))
+            print("="*50)
+
+            main_loop()
+
+        except KeyboardInterrupt:
+            print("\n程序被用户中断")
+            break
+        except Exception as e:
+            print("主程序错误:", e)
+            restart_count += 1
+            wait_time = restart_count * 5
+            print("{}秒后重启...".format(wait_time))
+            time.sleep(wait_time)
+        finally:
+            # 清理资源
+            try:
+                if mqtt_client:
+                    mqtt_client.disconnect()
+            except:
+                pass
+
+    print("达到最大重启次数，程序退出")
+
+# 程序入口
+if __name__ == "__main__":
+    main()

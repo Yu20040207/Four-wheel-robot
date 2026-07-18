@@ -1,0 +1,423 @@
+# openmv_emqx_face_recognition_fixed.py
+import sensor
+import network
+import time
+from mqtt import MQTTClient
+import ujson
+import gc
+import struct
+
+# 配置区域 - 请根据实际情况修改
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置 - 请确认服务器IP是否正确
+EMQX_BROKER = "192.168.13.225"
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+CONTROL_TOPIC = "openmv/control"
+COMMAND_TOPIC = "openmv/command"
+FACE_RESULT_TOPIC = "openmv/face/result"
+
+# 视频流配置
+FRAME_SIZE = sensor.QQVGA  # 改为更小的分辨率测试
+FRAME_QUALITY = 50         # 降低质量测试
+TARGET_FPS = 10            # 降低帧率测试
+MAX_FRAME_SIZE = 5000
+
+# 全局变量
+wlan = None
+mqtt_client = None
+frame_count = 0
+is_streaming = True
+reconnect_count = 0
+MAX_RECONNECT = 5
+last_face_result = None
+face_result_time = 0
+
+def init_camera():
+    """初始化摄像头"""
+    try:
+        sensor.reset()
+        sensor.set_pixformat(sensor.RGB565)
+        sensor.set_framesize(FRAME_SIZE)
+        sensor.skip_frames(20)
+        sensor.set_auto_whitebal(False)
+        sensor.set_auto_gain(False)
+        sensor.set_auto_exposure(False, exposure_us=15000)
+        print("摄像头初始化完成 - 分辨率: {}x{}".format(
+            sensor.width(), sensor.height()))
+        return True
+    except Exception as e:
+        print("摄像头初始化失败:", e)
+        return False
+
+def connect_wifi_with_retry(max_retries=3):
+    """带重试的WiFi连接"""
+    global wlan
+    
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+    
+    for attempt in range(max_retries):
+        print("WiFi连接尝试 {}...".format(attempt + 1))
+        
+        if wlan.isconnected():
+            print("WiFi已连接")
+            config = wlan.ifconfig()
+            print("网络配置:", config)
+            if config[0] != '0.0.0.0':
+                return True
+            else:
+                print("IP地址无效，重新连接...")
+                wlan.disconnect()
+                time.sleep(2)
+        
+        # 扫描网络
+        print("扫描网络...")
+        try:
+            networks = wlan.scan()
+            found = False
+            for net in networks:
+                ssid = net[0].decode('utf-8') if isinstance(net[0], bytes) else net[0]
+                if ssid == SSID:
+                    found = True
+                    print("找到目标网络: {}".format(SSID))
+                    break
+            if not found:
+                print("未找到网络: {}".format(SSID))
+                continue
+        except Exception as e:
+            print("扫描网络失败:", e)
+        
+        # 连接WiFi
+        print("连接中...")
+        wlan.connect(SSID, KEY)
+        
+        # 等待连接
+        timeout = 20
+        while timeout > 0:
+            if wlan.isconnected():
+                config = wlan.ifconfig()
+                print("连接成功!")
+                print("IP地址:", config[0])
+                if config[0] != '0.0.0.0':
+                    return True
+                else:
+                    break
+            time.sleep_ms(500)
+            timeout -= 1
+            print(".", end="")
+        
+        print("\n连接超时，重试...")
+        time.sleep(2)
+    
+    print("WiFi连接失败!")
+    return False
+
+def connect_emqx_with_retry(max_retries=3):
+    """带重试的EMQX连接"""
+    global mqtt_client
+    
+    for attempt in range(max_retries):
+        try:
+            client_id = "openmv_{}_{}".format(time.ticks_ms(), attempt)
+            print("EMQX连接尝试 {}...".format(attempt + 1))
+            
+            mqtt_client = MQTTClient(
+                client_id,
+                EMQX_BROKER,
+                port=EMQX_PORT,
+                user=EMQX_USERNAME,
+                password=EMQX_PASSWORD,
+                keepalive=30
+            )
+            
+            # 设置回调函数
+            mqtt_client.set_callback(mqtt_message_callback)
+            
+            print("连接到 {}:{}...".format(EMQX_BROKER, EMQX_PORT))
+            mqtt_client.connect()
+            
+            # 订阅主题
+            mqtt_client.subscribe(CONTROL_TOPIC)
+            mqtt_client.subscribe(COMMAND_TOPIC)
+            mqtt_client.subscribe(FACE_RESULT_TOPIC)
+            
+            print("EMQX连接成功!")
+            print("已订阅主题:")
+            print("  -", CONTROL_TOPIC)
+            print("  -", COMMAND_TOPIC)
+            print("  -", FACE_RESULT_TOPIC)
+            return True
+            
+        except Exception as e:
+            print("EMQX连接失败 {}: {}".format(attempt + 1, e))
+            if attempt < max_retries - 1:
+                print("5秒后重试...")
+                time.sleep(5)
+    
+    return False
+
+def mqtt_message_callback(topic, msg):
+    """MQTT消息回调"""
+    try:
+        topic_str = topic.decode('utf-8') if isinstance(topic, bytes) else str(topic)
+        msg_str = msg.decode('utf-8') if isinstance(msg, bytes) else str(msg)
+        
+        print("收到MQTT消息:")
+        print("  主题:", topic_str)
+        print("  内容:", msg_str)
+        
+        if topic_str == CONTROL_TOPIC:
+            handle_control_message(msg_str)
+        elif topic_str == COMMAND_TOPIC:
+            handle_command_message(msg_str)
+        elif topic_str == FACE_RESULT_TOPIC:
+            handle_face_result(msg_str)
+            
+    except Exception as e:
+        print("消息处理错误:", e)
+
+def handle_control_message(message):
+    """处理控制消息"""
+    global is_streaming
+    
+    try:
+        cmd = message.lower().strip()
+        print("控制命令:", cmd)
+        
+        if cmd == "start":
+            is_streaming = True
+            print("开始视频流")
+        elif cmd == "stop":
+            is_streaming = False
+            print("停止视频流")
+        elif cmd == "restart":
+            print("重启摄像头")
+            init_camera()
+    except Exception as e:
+        print("控制消息处理错误:", e)
+
+def handle_command_message(message):
+    """处理命令消息"""
+    try:
+        cmd_data = ujson.loads(message)
+        command = cmd_data.get("command")
+        print("命令:", command)
+        
+        if command == "set_quality":
+            new_quality = cmd_data.get("quality")
+            if new_quality and 10 <= new_quality <= 100:
+                global FRAME_QUALITY
+                FRAME_QUALITY = new_quality
+                print("设置质量: {}%".format(new_quality))
+                
+    except Exception as e:
+        print("命令消息处理错误:", e)
+
+def handle_face_result(message):
+    """处理人脸识别结果"""
+    global last_face_result, face_result_time
+    
+    try:
+        face_data = ujson.loads(message)
+        
+        # 打印人脸识别结果
+        name = face_data.get('name', 'Unknown')
+        confidence = face_data.get('confidence', 0)
+        status = face_data.get('status', '')
+        
+        print("\n" + "="*40)
+        print("人脸识别结果:")
+        print("  姓名: {}".format(name))
+        print("  置信度: {:.2f}%".format(confidence * 100))
+        print("  状态: {}".format(status))
+        print("="*40 + "\n")
+        
+        # 存储结果用于在图像上显示
+        last_face_result = face_data
+        face_result_time = time.ticks_ms()
+        
+    except Exception as e:
+        print("人脸结果处理错误:", e)
+
+def capture_and_draw_frame():
+    """捕获并绘制帧"""
+    try:
+        img = sensor.snapshot()
+        
+        # 在图像上显示人脸识别结果（如果有）
+        draw_face_result(img)
+        
+        jpeg_data = img.compress(quality=FRAME_QUALITY)
+        
+        if not isinstance(jpeg_data, bytes):
+            jpeg_data = bytes(jpeg_data)
+            
+        return jpeg_data
+    except Exception as e:
+        print("帧捕获失败:", e)
+        return None
+
+def draw_face_result(img):
+    """在图像上绘制人脸识别结果"""
+    global last_face_result, face_result_time
+    
+    # 只显示最近5秒内的人脸结果
+    if (last_face_result and 
+        time.ticks_diff(time.ticks_ms(), face_result_time) < 5000):
+        
+        try:
+            name = last_face_result.get('name', 'Unknown')
+            confidence = last_face_result.get('confidence', 0)
+            status = last_face_result.get('status', '')
+            
+            # 绘制背景矩形
+            img.draw_rectangle(0, 0, img.width(), 20, fill=True, color=(0, 0, 0))
+            
+            # 显示文本
+            result_text = "{} ({:.1f}%)".format(name, confidence * 100)
+            img.draw_string(5, 5, result_text, color=(255, 255, 255), scale=1)
+            
+        except Exception as e:
+            print("绘制人脸结果失败:", e)
+
+def send_video_frame():
+    """发送视频帧到EMQX"""
+    global frame_count
+    
+    try:
+        # 捕获图像
+        jpeg_data = capture_and_draw_frame()
+        if not jpeg_data:
+            return False
+            
+        frame_size = len(jpeg_data)
+        
+        if frame_size > MAX_FRAME_SIZE:
+            print("帧过大: {} 字节，跳过".format(frame_size))
+            return False
+        
+        # 构建消息
+        timestamp = time.ticks_ms()
+        header = struct.pack('IIII', frame_count, timestamp, frame_size, FRAME_QUALITY)
+        
+        # 组合头部和图像数据
+        message_data = header + jpeg_data
+        
+        # 发布到EMQX
+        mqtt_client.publish(VIDEO_TOPIC, message_data)
+        
+        frame_count += 1
+        
+        # 每5帧输出一次状态
+        if frame_count % 5 == 0:
+            print("已发送 {} 帧".format(frame_count))
+        
+        return True
+
+    except Exception as e:
+        print("发送视频帧失败:", e)
+        return False
+
+def send_status():
+    """发送状态信息"""
+    global last_face_result
+    
+    try:
+        status_msg = {
+            "frames_sent": frame_count,
+            "memory_free": gc.mem_free(),
+            "memory_alloc": gc.mem_alloc(),
+            "status": "streaming" if is_streaming else "stopped",
+            "timestamp": time.ticks_ms(),
+            "last_face_result": last_face_result
+        }
+        mqtt_client.publish(STATUS_TOPIC, ujson.dumps(status_msg))
+        print("状态已发送")
+    except Exception as e:
+        print("发送状态失败:", e)
+
+def check_mqtt_messages():
+    """检查MQTT消息"""
+    try:
+        mqtt_client.check_msg()
+    except Exception as e:
+        print("检查消息失败:", e)
+
+def main():
+    """主函数"""
+    print("=== OpenMV EMQX人脸识别视频流 ===")
+    
+    # 初始化摄像头
+    if not init_camera():
+        print("摄像头初始化失败，退出")
+        return
+    
+    # 连接WiFi
+    if not connect_wifi_with_retry():
+        print("WiFi连接失败，退出")
+        return
+    
+    # 连接EMQX
+    if not connect_emqx_with_retry():
+        print("EMQX连接失败，退出")
+        return
+    
+    print("系统就绪! 开始视频流传输...")
+    print("等待人脸识别结果...")
+    
+    last_status_time = time.ticks_ms()
+    last_message_check = time.ticks_ms()
+    
+    # 主循环
+    while True:
+        try:
+            current_time = time.ticks_ms()
+            
+            # 定期检查MQTT消息
+            if time.ticks_diff(current_time, last_message_check) > 100:
+                check_mqtt_messages()
+                last_message_check = current_time
+            
+            if not is_streaming:
+                time.sleep_ms(100)
+                continue
+
+            # 发送视频帧
+            if send_video_frame():
+                # 定期状态报告
+                if time.ticks_diff(current_time, last_status_time) > 5000:
+                    send_status()
+                    gc.collect()
+                    last_status_time = current_time
+            else:
+                print("发送失败，暂停1秒")
+                time.sleep_ms(1000)
+
+            # 控制帧率
+            time.sleep_ms(int(1000 / TARGET_FPS))
+
+        except Exception as e:
+            print("主循环错误:", e)
+            time.sleep_ms(2000)
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序错误:", e)
+    finally:
+        if mqtt_client:
+            try:
+                mqtt_client.disconnect()
+                print("MQTT连接已关闭")
+            except:
+                pass
+            

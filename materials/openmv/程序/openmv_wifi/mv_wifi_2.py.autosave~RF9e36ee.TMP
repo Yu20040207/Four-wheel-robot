@@ -1,0 +1,356 @@
+# OpenMV HTTP Video Stream Server
+import sensor
+import time
+import network
+import socket
+
+# ===== 配置区域 =====
+SSID = "MTCPC"
+KEY = "mt12345mt"
+HTTP_PORT = 8080
+
+# ===== 全局变量 =====
+wlan = None
+server_socket = None
+frame_count = 0
+
+def init_camera():
+    """初始化摄像头"""
+    sensor.reset()
+    sensor.set_pixformat(sensor.RGB565)
+    sensor.set_framesize(sensor.QVGA)  # 320x240
+    sensor.skip_frames(20)
+    sensor.set_auto_whitebal(False)
+    print("摄像头初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+def connect_wifi():
+    """连接WiFi网络"""
+    global wlan
+
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+
+    if not wlan.isconnected():
+        print('正在连接WiFi: "{}"...'.format(SSID))
+        wlan.connect(SSID, KEY)
+
+        timeout = 20
+        while not wlan.isconnected() and timeout > 0:
+            time.sleep_ms(500)
+            timeout -= 1
+            print(".", end="")
+
+    if wlan.isconnected():
+        print("\nWiFi连接成功!")
+        ip = wlan.ifconfig()[0]
+        print("IP地址:", ip)
+        return True
+    else:
+        print("\nWiFi连接失败!")
+        return False
+
+def send_http_response(client, code, content_type, content):
+    """发送HTTP响应"""
+    try:
+        response = "HTTP/1.1 {} OK\r\n".format(code)
+        response += "Content-Type: {}\r\n".format(content_type)
+
+        if isinstance(content, str):
+            content = content.encode('utf-8')
+
+        response += "Content-Length: {}\r\n".format(len(content))
+        response += "Connection: close\r\n"
+        response += "\r\n"
+
+        client.send(response.encode('utf-8'))
+        client.send(content)
+        return True
+    except Exception as e:
+        print("发送HTTP响应错误:", e)
+        return False
+
+def send_mjpeg_frame(client, jpeg_data):
+    """发送单个MJPEG帧"""
+    try:
+        frame_header = "--frame\r\n"
+        frame_header += "Content-Type: image/jpeg\r\n"
+        frame_header += "Content-Length: {}\r\n".format(len(jpeg_data))
+        frame_header += "\r\n"
+
+        client.send(frame_header.encode())
+        client.send(jpeg_data)
+        client.send("\r\n".encode())
+        return True
+    except Exception as e:
+        print("发送帧错误:", e)
+        return False
+
+def handle_root(client):
+    """处理根路径请求"""
+    html = """<!DOCTYPE html>
+<html>
+<head>
+    <title>OpenMV实时画面</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 20px;
+            text-align: center;
+            background: #f0f0f0;
+        }
+        .container {
+            max-width: 640px;
+            margin: 0 auto;
+            background: white;
+            padding: 20px;
+            border-radius: 10px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .video-container {
+            margin: 20px 0;
+            background: #000;
+            padding: 10px;
+            border-radius: 5px;
+        }
+        .btn {
+            padding: 10px 20px;
+            margin: 10px;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+            background: #2196F3;
+            color: white;
+        }
+        .status {
+            background: #e8f5e9;
+            padding: 15px;
+            border-radius: 5px;
+            margin: 20px 0;
+            text-align: center;
+            font-family: monospace;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>OpenMV实时画面</h1>
+        <p><strong>IP地址:</strong> """ + wlan.ifconfig()[0] + """:""" + str(HTTP_PORT) + """</p>
+
+        <div class="video-container">
+            <img id="video" src="/video" width="320" height="240" alt="视频流">
+        </div>
+
+        <button class="btn" onclick="refreshVideo()">刷新画面</button>
+
+        <div class="status">
+            <div>状态: <span id="status">连接中...</span></div>
+            <div>时间: <span id="time">--:--:--</span></div>
+        </div>
+    </div>
+
+    <script>
+        let videoElement = document.getElementById('video');
+        let statusElement = document.getElementById('status');
+        let timeElement = document.getElementById('time');
+
+        function updateTime() {
+            timeElement.textContent = new Date().toLocaleTimeString();
+        }
+
+        function refreshVideo() {
+            statusElement.textContent = '重新连接中...';
+            // 添加时间戳防止缓存
+            videoElement.src = '/video?t=' + new Date().getTime();
+            setTimeout(() => {
+                statusElement.textContent = '已连接';
+            }, 1000);
+        }
+
+        // 初始化时间显示
+        setInterval(updateTime, 1000);
+
+        // 视频加载错误处理
+        videoElement.onerror = function() {
+            statusElement.textContent = '视频加载错误，请点击刷新';
+        };
+
+        videoElement.onload = function() {
+            statusElement.textContent = '已连接';
+        };
+
+        // 页面加载时自动开始
+        window.onload = function() {
+            statusElement.textContent = '正在连接...';
+        };
+    </script>
+</body>
+</html>"""
+
+    send_http_response(client, 200, "text/html", html)
+    print("已发送HTML页面")
+
+def handle_video(client):
+    """处理视频流请求"""
+    global frame_count
+
+    print("开始视频流传输到客户端")
+
+    # 发送MJPEG流头
+    try:
+        header = "HTTP/1.1 200 OK\r\n"
+        header += "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n"
+        header += "Connection: close\r\n"
+        header += "Cache-Control: no-cache\r\n"
+        header += "Pragma: no-cache\r\n"
+        header += "\r\n"
+        client.send(header.encode())
+    except Exception as e:
+        print("发送视频头错误:", e)
+        return
+
+    clock = time.clock()
+    last_status_time = time.ticks_ms()
+
+    try:
+        while True:
+            clock.tick()
+
+            # 捕获图像
+            img = sensor.snapshot()
+
+            # 压缩为JPEG
+            jpeg = img.compress(quality=70)
+
+            # 发送帧
+            if not send_mjpeg_frame(client, jpeg):
+                break
+
+            frame_count += 1
+
+            # 每5秒输出一次状态
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_status_time) > 5000:
+                print("视频流状态: {} 帧, {:.1f} FPS".format(frame_count, clock.fps()))
+                last_status_time = current_time
+
+            # 控制帧率 (大约15fps)
+            time.sleep_ms(66)
+
+            # 检查客户端是否断开
+            try:
+                client.setblocking(False)
+                data = client.recv(1)
+                if not data:  # 客户端断开
+                    break
+            except:
+                # 没有数据是正常的，继续发送
+                pass
+            finally:
+                client.setblocking(True)
+
+    except Exception as e:
+        print("视频流错误:", e)
+
+    print("视频流传输结束，共发送 {} 帧".format(frame_count))
+
+def parse_request(data):
+    """解析HTTP请求"""
+    try:
+        lines = data.decode().split('\r\n')
+        if not lines:
+            return None, None
+
+        first_line = lines[0].split(' ')
+        if len(first_line) < 2:
+            return None, None
+
+        method = first_line[0]
+        path = first_line[1]
+
+        return method, path
+    except Exception as e:
+        print("解析请求错误:", e)
+        return None, None
+
+def main():
+    """主函数"""
+    global server_socket, frame_count
+
+    print("=== OpenMV视频流服务器 ===")
+
+    # 初始化硬件
+    init_camera()
+
+    # 连接WiFi
+    if not connect_wifi():
+        print("无法连接WiFi，程序退出")
+        return
+
+    # 创建服务器socket
+    try:
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        server_socket.bind(('0.0.0.0', HTTP_PORT))
+        server_socket.listen(5)
+        print("服务器启动在端口", HTTP_PORT)
+        print("请访问: http://{}:{}".format(wlan.ifconfig()[0], HTTP_PORT))
+    except Exception as e:
+        print("启动服务器失败:", e)
+        return
+
+    frame_count = 0
+
+    # 主循环
+    while True:
+        try:
+            print("等待客户端连接...")
+            client, addr = server_socket.accept()
+            print("客户端连接:", addr)
+
+            # 接收请求
+            data = client.recv(1024)
+            if not data:
+                client.close()
+                continue
+
+            # 解析请求
+            method, path = parse_request(data)
+            print("请求: {} {}".format(method, path if path else "unknown"))
+
+            if method == "GET":
+                if path == "/" or path == "/index.html":
+                    handle_root(client)
+                elif path.startswith("/video"):
+                    handle_video(client)
+                else:
+                    # 重定向到主页
+                    send_http_response(client, 302, "text/plain", "")
+                    client.send("Location: /\r\n\r\n".encode())
+            else:
+                send_http_response(client, 405, "text/plain", "Method Not Allowed")
+
+            client.close()
+            print("客户端断开连接\n")
+
+        except Exception as e:
+            print("服务器错误:", e)
+            try:
+                client.close()
+            except:
+                pass
+            time.sleep_ms(1000)
+
+# 启动程序
+try:
+    main()
+except KeyboardInterrupt:
+    print("\n程序被用户中断")
+except Exception as e:
+    print("程序错误:", e)
+finally:
+    if server_socket:
+        server_socket.close()
+    print("服务器关闭")

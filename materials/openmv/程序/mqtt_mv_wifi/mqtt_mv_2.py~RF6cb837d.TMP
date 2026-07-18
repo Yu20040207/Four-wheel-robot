@@ -1,0 +1,211 @@
+# openmv_emqx_stream.py
+import sensor
+import network
+import time
+from mqtt import MQTTClient
+import ujson
+import gc
+
+# 配置区域
+SSID = "MTCPC"
+KEY = "mt12345mt"
+
+# EMQX服务器配置
+EMQX_BROKER = "192.168.13.225"  # 你的EMQX服务器IP
+EMQX_PORT = 1883
+EMQX_USERNAME = "sy"
+EMQX_PASSWORD = "123"
+
+# MQTT主题
+VIDEO_TOPIC = "openmv/video/stream"
+STATUS_TOPIC = "openmv/status"
+CONTROL_TOPIC = "openmv/control"
+
+# 视频流配置
+FRAME_SIZE = sensor.QVGA  # 640x480
+FRAME_QUALITY = 80
+TARGET_FPS = 35
+MAX_FRAME_SIZE = 10000
+
+# 全局变量
+wlan = None
+mqtt_client = None
+frame_count = 0
+is_streaming = True
+
+def init_camera():
+    """初始化摄像头"""
+    sensor.reset()
+    sensor.set_pixformat(sensor.RGB565)
+    sensor.set_framesize(FRAME_SIZE)
+    sensor.skip_frames(20)
+    sensor.set_auto_whitebal(False)
+    sensor.set_auto_gain(False)
+    sensor.set_auto_exposure(False, exposure_us=15000)
+    print("摄像头初始化完成 - 分辨率: {}x{}".format(sensor.width(), sensor.height()))
+
+def connect_wifi():
+    """连接WiFi"""
+    global wlan
+    wlan = network.WLAN(network.STA_IF)
+    wlan.active(True)
+
+    print("连接WiFi: {}...".format(SSID))
+
+    if wlan.isconnected():
+        wlan.disconnect()
+        time.sleep(1)
+
+    wlan.connect(SSID, KEY)
+
+    timeout = 30
+    while not wlan.isconnected() and timeout > 0:
+        time.sleep_ms(500)
+        timeout -= 1
+        print(".", end="")
+
+    if wlan.isconnected():
+        print("\nWiFi连接成功!")
+        print("IP地址:", wlan.ifconfig()[0])
+        return True
+    else:
+        print("\nWiFi连接失败!")
+        return False
+
+def connect_emqx():
+    """连接EMQX服务器"""
+    global mqtt_client
+
+    try:
+        client_id = "openmv_camera_{}".format(time.ticks_ms())
+
+        print("连接EMQX服务器: {}:{}".format(EMQX_BROKER, EMQX_PORT))
+        mqtt_client = MQTTClient(
+            client_id,
+            EMQX_BROKER,
+            port=EMQX_PORT,
+            user=EMQX_USERNAME,
+            password=EMQX_PASSWORD,
+            keepalive=30
+        )
+
+        mqtt_client.connect()
+        print("EMQX连接成功! 客户端ID:", client_id)
+        return True
+
+    except Exception as e:
+        print("EMQX连接失败:", e)
+        return False
+
+def send_video_frame():
+    """发送视频帧到EMQX"""
+    global frame_count
+
+    try:
+        # 捕获图像
+        img = sensor.snapshot()
+
+        # 压缩为JPEG
+        jpeg_data = img.compress(quality=FRAME_QUALITY)
+
+        if not isinstance(jpeg_data, bytes):
+            jpeg_data = bytes(jpeg_data)
+
+        frame_size = len(jpeg_data)
+
+        # 构建消息
+        message = {
+            "frame_id": frame_count,
+            "timestamp": time.ticks_ms(),
+            "size": frame_size,
+            "resolution": "{}x{}".format(sensor.width(), sensor.height()),
+            "data": jpeg_data.hex()  # 将二进制数据转为十六进制字符串
+        }
+
+        # 发布到EMQX
+        mqtt_client.publish(VIDEO_TOPIC, ujson.dumps(message))
+
+        frame_count += 1
+
+        # 每10帧输出一次状态
+        if frame_count % 10 == 0:
+            print("已发送 {} 帧, 大小: {} 字节".format(frame_count, frame_size))
+
+        return True
+
+    except Exception as e:
+        print("发送视频帧失败:", e)
+        return False
+
+def stream_video():
+    """视频流主循环"""
+    global is_streaming
+
+    print("开始视频流传输...")
+    print("目标FPS: {}, 质量: {}%".format(TARGET_FPS, FRAME_QUALITY))
+
+    last_status_time = time.ticks_ms()
+
+    while True:
+        try:
+            if not is_streaming:
+                time.sleep_ms(100)
+                continue
+
+            # 发送视频帧
+            success = send_video_frame()
+
+            if not success:
+                print("发送失败，等待重连...")
+                if not connect_emqx():
+                    time.sleep_ms(5000)
+                    continue
+
+            # 定期状态报告
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_status_time) > 10000:
+                status_msg = {
+                    "frames_sent": frame_count,
+                    "memory_free": gc.mem_free(),
+                    "status": "streaming"
+                }
+                mqtt_client.publish(STATUS_TOPIC, ujson.dumps(status_msg))
+                gc.collect()
+                last_status_time = current_time
+
+            # 控制帧率
+            frame_delay = max(100, int(1000 / TARGET_FPS))
+            time.sleep_ms(frame_delay)
+
+        except Exception as e:
+            print("视频流错误:", e)
+            time.sleep_ms(2000)
+
+def main():
+    """主函数"""
+    print("=== OpenMV EMQX视频流 ===")
+
+    # 初始化
+    init_camera()
+
+    # 连接网络
+    if not connect_wifi():
+        return
+
+    # 连接EMQX
+    if not connect_emqx():
+        return
+
+    print("系统就绪! 开始视频流传输...")
+    stream_video()
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        print("程序错误:", e)
+    finally:
+        if mqtt_client:
+            mqtt_client.disconnect()
+
+

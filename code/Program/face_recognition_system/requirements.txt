@@ -1,0 +1,9 @@
+# Python 3.12 需 numpy>=1.26（1.24.x 无预编译包会触发源码编译失败）
+flask==2.3.3
+Flask-Login==0.6.3
+paho-mqtt==1.6.1
+opencv-python>=4.9.0.80
+numpy>=1.26.4,<2.0
+Pillow>=10.2.0
+face-recognition==1.3.0
+ultralytics>=8.0.0

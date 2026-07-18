@@ -1,0 +1,568 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}OpenMV人脸识别系统{% endblock %}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}?v=20250624b">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        .navbar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            padding: 0;
+        }
+        .nav-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 14px 20px;
+            gap: 16px;
+        }
+        .nav-title {
+            color: white;
+            font-weight: 600;
+            margin: 0;
+            font-size: 1.35rem;
+            white-space: nowrap;
+        }
+        .nav-menu {
+            display: flex;
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            gap: 6px;
+            align-items: center;
+            flex-wrap: wrap;
+            justify-content: flex-end;
+        }
+        .nav-menu li a {
+            color: white;
+            text-decoration: none;
+            padding: 8px 14px;
+            border-radius: 8px;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-weight: 500;
+            font-size: 0.92rem;
+            border: 2px solid transparent;
+            white-space: nowrap;
+        }
+        .nav-menu li a:hover {
+            background-color: rgba(255,255,255,0.15);
+            border-color: rgba(255,255,255,0.25);
+        }
+        .nav-menu li a.active {
+            background-color: rgba(255,255,255,0.22);
+            border-color: rgba(255,255,255,0.45);
+        }
+        .nav-user-pill {
+            color: rgba(255,255,255,0.95);
+            font-size: 0.85rem;
+            padding: 6px 12px;
+            background: rgba(255,255,255,0.12);
+            border-radius: 999px;
+            white-space: nowrap;
+        }
+        .nav-robot-bar {
+            background: rgba(255,255,255,0.12);
+            border-top: 1px solid rgba(255,255,255,0.18);
+        }
+        .nav-robot-inner {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            flex-wrap: wrap;
+        }
+        .robot-bar-label {
+            color: rgba(255,255,255,0.95);
+            font-size: 0.9rem;
+            font-weight: 600;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .robot-select-wrap {
+            flex: 1;
+            min-width: 240px;
+            max-width: 400px;
+            position: relative;
+        }
+        .robot-picker { position: relative; width: 100%; }
+        .robot-picker-trigger {
+            width: 100%;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 10px 14px;
+            border: 1px solid rgba(255,255,255,0.35);
+            border-radius: 12px;
+            background: rgba(255,255,255,0.96);
+            color: #1e293b;
+            font-size: 0.92rem;
+            font-weight: 500;
+            cursor: pointer;
+            box-shadow: 0 4px 14px rgba(15,23,42,0.12);
+            transition: border-color 0.2s, box-shadow 0.2s, transform 0.15s;
+        }
+        .robot-picker-trigger:hover {
+            border-color: rgba(255,255,255,0.65);
+            box-shadow: 0 6px 18px rgba(15,23,42,0.16);
+        }
+        .robot-picker-trigger.open {
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102,126,234,0.25);
+        }
+        .robot-picker-trigger:disabled {
+            opacity: 0.65;
+            cursor: not-allowed;
+        }
+        .robot-picker-icon {
+            width: 32px;
+            height: 32px;
+            border-radius: 10px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+            font-size: 0.85rem;
+        }
+        .robot-picker-text {
+            flex: 1;
+            text-align: left;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .robot-picker-text.placeholder { color: #94a3b8; font-weight: 400; }
+        .robot-picker-chevron {
+            color: #64748b;
+            font-size: 0.75rem;
+            transition: transform 0.2s;
+        }
+        .robot-picker-trigger.open .robot-picker-chevron { transform: rotate(180deg); }
+        .robot-picker-menu {
+            position: absolute;
+            top: calc(100% + 8px);
+            left: 0;
+            right: 0;
+            z-index: 1050;
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 12px 40px rgba(15,23,42,0.18);
+            border: 1px solid #e2e8f0;
+            padding: 6px;
+            max-height: 260px;
+            overflow-y: auto;
+            animation: robotMenuIn 0.18s ease;
+        }
+        @keyframes robotMenuIn {
+            from { opacity: 0; transform: translateY(-6px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .robot-picker-menu[hidden] { display: none !important; }
+        .robot-picker-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            padding: 10px 12px;
+            border: none;
+            border-radius: 10px;
+            background: transparent;
+            color: #334155;
+            font-size: 0.9rem;
+            text-align: left;
+            cursor: pointer;
+            transition: background 0.15s;
+        }
+        .robot-picker-item:hover {
+            background: #f1f5f9;
+        }
+        .robot-picker-item.selected {
+            background: linear-gradient(135deg, rgba(102,126,234,0.12), rgba(118,75,162,0.1));
+            color: #4338ca;
+            font-weight: 600;
+        }
+        .robot-picker-item-id {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            font-weight: 400;
+        }
+        .robot-picker-item.selected .robot-picker-item-id { color: #6366f1; }
+        .robot-picker-check {
+            margin-left: auto;
+            color: #667eea;
+            opacity: 0;
+            font-size: 0.85rem;
+        }
+        .robot-picker-item.selected .robot-picker-check { opacity: 1; }
+        .robot-picker-empty {
+            padding: 16px;
+            text-align: center;
+            color: #94a3b8;
+            font-size: 0.88rem;
+        }
+        .robot-select {
+            display: none;
+        }
+        .robot-hint {
+            font-size: 0.82rem;
+            color: rgba(255,255,255,0.88);
+            padding: 4px 10px;
+            border-radius: 8px;
+            background: rgba(251, 191, 36, 0.22);
+            border: 1px solid rgba(251, 191, 36, 0.35);
+        }
+        .robot-hint.is-ok {
+            background: rgba(34, 197, 94, 0.2);
+            border-color: rgba(34, 197, 94, 0.35);
+        }
+        .robot-hint.is-hidden { display: none; }
+        .main-content {
+            min-height: calc(100vh - 140px);
+            padding: 30px 20px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+        .footer {
+            background: #f8f9fa;
+            text-align: center;
+            padding: 25px;
+            border-top: 1px solid #dee2e6;
+            color: #6c757d;
+        }
+        .btn-robot-locked:disabled,
+        .btn-robot-locked.disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+        @media (max-width: 768px) {
+            .nav-top { flex-direction: column; align-items: stretch; }
+            .nav-menu { justify-content: center; }
+            .nav-title { text-align: center; font-size: 1.15rem; }
+            .nav-robot-inner { flex-direction: column; align-items: stretch; }
+            .robot-select-wrap { max-width: none; }
+        }
+    </style>
+</head>
+
+<body>
+    <nav class="navbar">
+        <div class="nav-top">
+            <h1 class="nav-title">
+                <i class="fas fa-camera me-2"></i>OpenMV人脸识别系统
+            </h1>
+            <ul class="nav-menu">
+                {% if current_user.is_authenticated %}
+                <li><span class="nav-user-pill"><i class="fas fa-user me-1"></i>{{ current_user.username }}</span></li>
+                {% endif %}
+                <li>
+                    <a href="{{ url_for('index') }}" class="{% if request.path == '/' %}active{% endif %}">
+                        <i class="fas fa-video"></i> 视频监控
+                    </a>
+                </li>
+                <li>
+                    <a href="{{ url_for('face_management') }}" class="{% if request.path == '/face_management' %}active{% endif %}">
+                        <i class="fas fa-users"></i> 人脸管理
+                    </a>
+                </li>
+                <li>
+                    <a href="{{ url_for('attendance_page') }}" class="{% if request.path == '/attendance' %}active{% endif %}">
+                        <i class="fas fa-clock"></i> 打卡系统
+                    </a>
+                </li>
+                <li>
+                    <a href="{{ url_for('auth.logout') }}">
+                        <i class="fas fa-sign-out-alt"></i> 退出
+                    </a>
+                </li>
+            </ul>
+        </div>
+
+        {% if current_user.is_authenticated %}
+        <div class="nav-robot-bar">
+            <div class="nav-robot-inner">
+                <span class="robot-bar-label"><i class="fas fa-robot"></i> 控制目标</span>
+                <div class="robot-select-wrap">
+                    <div class="robot-picker" id="robotPicker">
+                        <button type="button" class="robot-picker-trigger" id="robotPickerTrigger" aria-haspopup="listbox" aria-expanded="false">
+                            <span class="robot-picker-icon"><i class="fas fa-robot"></i></span>
+                            <span class="robot-picker-text placeholder" id="robotPickerLabel">加载机器人列表...</span>
+                            <i class="fas fa-chevron-down robot-picker-chevron"></i>
+                        </button>
+                        <div class="robot-picker-menu" id="robotPickerMenu" hidden role="listbox"></div>
+                    </div>
+                    <select id="robotSelector" class="robot-select" aria-hidden="true" tabindex="-1"></select>
+                </div>
+                <span id="robotHint" class="robot-hint {% if not robot_control_required %}is-hidden{% endif %}">
+                    请先选择机器人后再进行控制操作
+                </span>
+            </div>
+        </div>
+        {% endif %}
+    </nav>
+
+    <main class="main-content">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="footer">
+        <p>&copy; 2024 OpenMV人脸识别系统 - 基于Flask和face_recognition</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        window.RobotControl = {
+            selectedId: {{ selected_robot_id|tojson }},
+            hasRobots: {{ has_bound_robots|tojson }},
+            connected: false,
+            required: {{ robot_control_required|tojson }}
+        };
+
+        var ROBOT_CONTROL_BUTTON_IDS = [
+            'startRecognition', 'openCamera', 'refreshStream', 'reloadFaces',
+            'saveRubbishPhoto', 'pickupGarbage', 'toggleFaceTracking', 'addFace', 'cancelCollection',
+            'sendRecognitionBtn', 'startHumanDetection', 'startHumanTracking',
+            'stopHumanTracking', 'disableHumanTracking'
+        ];
+
+        var ROBOT_CONNECTION_OPTIONAL_IDS = ['reloadFaces'];
+
+        function updateRobotControlUI() {
+            var rc = window.RobotControl || {};
+            var needSelect = rc.hasRobots && !rc.selectedId;
+            var needConnect = !!(rc.selectedId && rc.connected === false);
+            var hint = document.getElementById('robotHint');
+            if (hint) {
+                if (needSelect) {
+                    hint.textContent = '请先选择机器人后再进行控制操作';
+                    hint.classList.remove('is-hidden', 'is-ok');
+                } else if (needConnect) {
+                    hint.textContent = '机器人未连接，请确认设备已开机并联网';
+                    hint.classList.remove('is-hidden', 'is-ok');
+                } else if (rc.selectedId && rc.connected) {
+                    hint.textContent = '机器人已连接，控制指令将发往该设备';
+                    hint.classList.remove('is-hidden');
+                    hint.classList.add('is-ok');
+                } else if (rc.selectedId) {
+                    hint.textContent = '已选中机器人，等待设备连接...';
+                    hint.classList.remove('is-hidden', 'is-ok');
+                } else {
+                    hint.classList.add('is-hidden');
+                }
+            }
+            ROBOT_CONTROL_BUTTON_IDS.forEach(function (id) {
+                var el = document.getElementById(id);
+                if (!el) return;
+                var optional = ROBOT_CONNECTION_OPTIONAL_IDS.indexOf(id) !== -1;
+                if (needSelect || (needConnect && !optional)) {
+                    el.disabled = true;
+                    el.classList.add('btn-robot-locked');
+                    el.title = needSelect ? '请先在顶部选择机器人' : '机器人未连接';
+                } else {
+                    el.disabled = false;
+                    el.classList.remove('btn-robot-locked');
+                    el.removeAttribute('title');
+                }
+            });
+            if (typeof window.updateControlPanelButtons === 'function' && window.__lastStatsData) {
+                window.updateControlPanelButtons(window.__lastStatsData);
+            }
+        }
+
+        window.syncRobotConnectionState = function (data) {
+            if (!data) return;
+            var wasConnected = !!window.RobotControl.connected;
+            var isConnected = !!(data.robot_connected || data.mqtt_connected);
+            window.RobotControl.connected = isConnected;
+            updateRobotControlUI();
+            if (!wasConnected && isConnected) {
+                var msg = '机器人已连接';
+                if (typeof showMessage === 'function') {
+                    showMessage(msg, 'success');
+                }
+            }
+        };
+
+        window.requireRobotSelected = function (showMsg) {
+            var rc = window.RobotControl || {};
+            if (!rc.selectedId && rc.hasRobots) {
+                var msg = '请先在顶部选择要控制的机器人';
+                if (showMsg !== false) {
+                    if (typeof showMessage === 'function') {
+                        showMessage(msg, 'error');
+                    } else if (typeof showHumanTrackingMessage === 'function') {
+                        showHumanTrackingMessage(msg, 'error');
+                    } else {
+                        alert(msg);
+                    }
+                }
+                return false;
+            }
+            if (rc.selectedId && rc.connected === false) {
+                var offlineMsg = '机器人未连接，请确认设备已开机并联网';
+                if (showMsg !== false) {
+                    if (typeof showMessage === 'function') {
+                        showMessage(offlineMsg, 'error');
+                    } else {
+                        alert(offlineMsg);
+                    }
+                }
+                return false;
+            }
+            return true;
+        };
+
+        document.addEventListener('DOMContentLoaded', function () {
+            var currentPath = window.location.pathname;
+            document.querySelectorAll('.nav-menu a').forEach(function (link) {
+                if (link.getAttribute('href') === currentPath) {
+                    link.classList.add('active');
+                }
+            });
+
+            var picker = document.getElementById('robotPicker');
+            var trigger = document.getElementById('robotPickerTrigger');
+            var menu = document.getElementById('robotPickerMenu');
+            var label = document.getElementById('robotPickerLabel');
+            var selector = document.getElementById('robotSelector');
+            if (!picker || !trigger || !menu || !label) return;
+
+            var robotsList = [];
+
+            function closeMenu() {
+                menu.hidden = true;
+                trigger.classList.remove('open');
+                trigger.setAttribute('aria-expanded', 'false');
+            }
+
+            function openMenu() {
+                if (trigger.disabled) return;
+                menu.hidden = false;
+                trigger.classList.add('open');
+                trigger.setAttribute('aria-expanded', 'true');
+            }
+
+            function setPickerLabel(text, isPlaceholder) {
+                label.textContent = text;
+                label.classList.toggle('placeholder', !!isPlaceholder);
+            }
+
+            function selectRobot(robotId) {
+                fetch('/api/robots/select', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({robot_id: robotId})
+                })
+                .then(function (r) { return r.json(); })
+                .then(function (d) {
+                    if (d.status === 'success') {
+                        location.reload();
+                    } else {
+                        alert(d.message || '选择失败');
+                    }
+                });
+            }
+
+            function renderMenu(robots, selectedId) {
+                menu.innerHTML = '';
+                if (!robots.length) {
+                    menu.innerHTML = '<div class="robot-picker-empty"><i class="fas fa-unlink me-2"></i>未绑定机器人</div>';
+                    return;
+                }
+                robots.forEach(function (robot) {
+                    var btn = document.createElement('button');
+                    btn.type = 'button';
+                    btn.className = 'robot-picker-item' + (robot.robot_id === selectedId ? ' selected' : '');
+                    btn.setAttribute('role', 'option');
+                    btn.dataset.robotId = robot.robot_id;
+                    btn.innerHTML =
+                        '<span class="robot-picker-icon" style="width:28px;height:28px;font-size:0.75rem;"><i class="fas fa-microchip"></i></span>' +
+                        '<span><span>' + robot.display_name + '</span><br><span class="robot-picker-item-id">' + robot.robot_id + '</span></span>' +
+                        '<i class="fas fa-check robot-picker-check"></i>';
+                    btn.addEventListener('click', function () {
+                        closeMenu();
+                        if (robot.robot_id !== selectedId) {
+                            selectRobot(robot.robot_id);
+                        }
+                    });
+                    menu.appendChild(btn);
+                });
+            }
+
+            function syncPickerUI(robots, selectedId) {
+                robotsList = robots || [];
+                selector.innerHTML = '';
+                if (!robotsList.length) {
+                    setPickerLabel('未绑定机器人', true);
+                    trigger.disabled = true;
+                    renderMenu([], null);
+                    updateRobotControlUI();
+                    return;
+                }
+                trigger.disabled = false;
+                var placeholderOpt = document.createElement('option');
+                placeholderOpt.value = '';
+                placeholderOpt.textContent = '— 请选择机器人 —';
+                selector.appendChild(placeholderOpt);
+                robotsList.forEach(function (robot) {
+                    var opt = document.createElement('option');
+                    opt.value = robot.robot_id;
+                    opt.textContent = robot.display_name;
+                    if (robot.robot_id === selectedId) opt.selected = true;
+                    selector.appendChild(opt);
+                });
+                if (selectedId) {
+                    var current = robotsList.find(function (r) { return r.robot_id === selectedId; });
+                    setPickerLabel(current ? current.display_name + ' · ' + current.robot_id : selectedId, false);
+                } else {
+                    setPickerLabel('— 请选择机器人 —', true);
+                }
+                renderMenu(robotsList, selectedId);
+                updateRobotControlUI();
+            }
+
+            trigger.addEventListener('click', function (e) {
+                e.stopPropagation();
+                if (menu.hidden) openMenu(); else closeMenu();
+            });
+
+            document.addEventListener('click', function (e) {
+                if (!picker.contains(e.target)) closeMenu();
+            });
+
+            document.addEventListener('keydown', function (e) {
+                if (e.key === 'Escape') closeMenu();
+            });
+
+            fetch('/api/robots/my')
+                .then(function (r) { return r.json(); })
+                .then(function (data) {
+                    if (data.status !== 'success') return;
+                    window.RobotControl.selectedId = data.selected_robot_id || null;
+                    window.RobotControl.hasRobots = !!(data.robots && data.robots.length);
+                    window.RobotControl.required = window.RobotControl.hasRobots && !window.RobotControl.selectedId;
+                    syncPickerUI(data.robots || [], data.selected_robot_id || null);
+                })
+                .catch(function (e) {
+                    console.error('加载机器人列表失败', e);
+                    setPickerLabel('加载失败', true);
+                });
+        });
+    </script>
+    <script src="{{ url_for('static', filename='js/main.js') }}?v=20250630a"></script>
+    {% block extra_js %}{% endblock %}
+</body>
+</html>

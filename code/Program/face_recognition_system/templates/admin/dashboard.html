@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+
+{% block title %}概览 - 管理后台{% endblock %}
+
+{% block content %}
+<h4 class="mb-4">系统概览</h4>
+
+<div class="row g-3 mb-4">
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">客户账号</div>
+            <div class="fs-3 fw-bold">{{ user_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">机器人</div>
+            <div class="fs-3 fw-bold">{{ robot_count }}</div>
+        </div>
+    </div>
+    <div class="col-md-4">
+        <div class="card p-3">
+            <div class="text-muted small">绑定关系</div>
+            <div class="fs-3 fw-bold">{{ binding_count }}</div>
+        </div>
+    </div>
+</div>
+
+<div class="card p-4">
+    <h5>快速开始</h5>
+    <ol class="mb-0">
+        <li>在 <a href="{{ url_for('admin.robots_page') }}">机器人</a> 页添加 robot_id（与 ESP32 一致）</li>
+        <li>在 <a href="{{ url_for('admin.users_page') }}">用户</a> 页创建客户账号</li>
+        <li>在 <a href="{{ url_for('admin.bindings_page') }}">绑定</a> 页将机器人分配给客户</li>
+        <li>客户访问 <code>/login</code> 登录，在顶部选择机器人后控制</li>
+    </ol>
+</div>
+
+{% if bindings %}
+<div class="card p-4 mt-4">
+    <h5>最近绑定</h5>
+    <table class="table table-sm mb-0">
+        <thead><tr><th>用户</th><th>robot_id</th><th>名称</th></tr></thead>
+        <tbody>
+        {% for b in bindings[:10] %}
+            <tr>
+                <td>{{ b.username }}</td>
+                <td><code>{{ b.robot_id }}</code></td>
+                <td>{{ b.display_name }}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %}
+{% endblock %}

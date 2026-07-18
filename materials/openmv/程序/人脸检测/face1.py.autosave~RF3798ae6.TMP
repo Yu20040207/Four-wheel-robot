@@ -1,0 +1,74 @@
+# This work is licensed under the MIT license.
+# Copyright (c) 2013-2023 OpenMV LLC. All rights reserved.
+# https://github.com/openmv/openmv/blob/master/LICENSE
+#
+# Face Detection Example with LED Blinking
+#
+# This example shows off the built-in face detection feature of the OpenMV Cam.
+# When a face is detected, the blue LED will blink.
+
+import sensor
+import time
+import image
+from machine import LED
+
+# Initialize blue LED
+led = LED("LED_BLUE")
+led.off()  # Ensure LED is off initially
+
+# Reset sensor
+sensor.reset()
+
+# Sensor settings
+sensor.set_contrast(3)
+sensor.set_gainceiling(16)
+# HQVGA and GRAYSCALE are the best for face tracking.
+sensor.set_framesize(sensor.HQVGA)
+sensor.set_pixformat(sensor.GRAYSCALE)
+
+# Load Haar Cascade
+# By default this will use all stages, lower stages is faster but less accurate.
+face_cascade = image.HaarCascade("/rom/haarcascade_frontalface.cascade", stages=25)
+print(face_cascade)
+
+# FPS clock
+clock = time.clock()
+
+# Variables for LED blinking
+last_led_toggle = 0
+led_state = False
+
+while True:
+    clock.tick()
+
+    # Capture snapshot
+    img = sensor.snapshot()
+
+    # Find objects.
+    # Note: Lower scale factor scales-down the image more and detects smaller objects.
+    # Higher threshold results in a higher detection rate, with more false positives.
+    objects = img.find_features(face_cascade, threshold=0.75, scale_factor=1.25)
+
+    # If faces are detected, blink the LED
+    if objects:
+        current_time = time.ticks_ms()
+        if time.ticks_diff(current_time, last_led_toggle) > 500:  # 500ms interval
+            led_state = not led_state
+            if led_state:
+                led.on()
+            else:
+                led.off()
+            last_led_toggle = current_time
+    else:
+        # No faces detected, turn off LED
+        led.off()
+        led_state = False
+
+    # Draw objects
+    for r in objects:
+        img.draw_rectangle(r)
+
+    # Print FPS.
+    # Note: Actual FPS is higher, streaming the FB makes it slower.
+    print(clock.fps())
+    

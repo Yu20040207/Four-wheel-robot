@@ -1,0 +1,162 @@
+import sensor, image, time
+from pid import PID
+from pyb import Servo, UART
+import json
+
+# 初始化函数
+def init_setup():
+    global pan_servo, tilt_servo, pan_pid, tilt_pid, sensor, clock, face_cascade, uart
+    
+    # 初始化UART串口（用于发送数据）
+    uart = UART(3, 115200)  # 使用UART3，波特率115200
+    
+    pan_servo = Servo(1)                         # 实例化云台靠下的舵机
+    tilt_servo = Servo(2)                        # 实例化云台靠上的舵机
+
+    pan_servo.calibration(500,2500,1500)         # 设置舵机脉冲范围为500-2500，中心位置为1500
+    tilt_servo.calibration(500,2500,1500)        # 设置舵机脉冲范围为500-2500，中心位置为1500
+
+    #pan_pid = PID(p=0.07, i=0, imax=90)          # 脱机运行或者禁用图像传输，使用这个PID
+    #tilt_pid = PID(p=0.05, i=0, imax=90)         # 脱机运行或者禁用图像传输，使用这个PID
+    pan_pid = PID(p=0.15, i=0,d=0.003, imax=90)           # 在线调试使用这个PID
+    tilt_pid = PID(p=0.15, i=0,d=0.006, imax=90)          # 在线调试使用这个PID
+
+    sensor.reset()                               # 初始化感光元件
+    sensor.set_contrast(3)                       # 对比度
+    sensor.set_gainceiling(16)                   # 自动增益
+    sensor.set_pixformat(sensor.GRAYSCALE)       # 图像格式设置为灰度
+    sensor.set_framesize(sensor.HQVGA)           # 图像大小设置为HQVGA，即240x160
+    sensor.skip_frames(10)                       # 跳过10帧，使以上设置生效
+    sensor.set_auto_whitebal(False)              # 关闭白平衡
+    clock = time.clock()                         # 创建时钟对象
+    face_cascade = image.HaarCascade("/rom/haarcascade_frontalface.cascade", stages=25)
+    
+    print("初始化完成，开始人脸检测...")
+
+# 舵机回归中位
+def middle():
+    pan_servo.angle(0, 1000)                     # 舵机在1秒内转到0度位置
+    tilt_servo.angle(0, 1000)                    # 舵机在1秒内转到0度位置
+    time.sleep(1)                                # 延时1秒
+
+# 查找识别到的目标颜色区域中最大区域的函数
+def find_max(blobs):
+    max_size = 0
+    for blob in blobs:
+        if blob[2] * blob[3] > max_size:
+            max_blob = blob
+            max_size = blob[2] * blob[3]
+    return max_blob
+
+# 通过串口发送人脸数据
+def send_face_data(face_data):
+    try:
+        # 将数据转换为JSON格式
+        json_data = json.dumps(face_data) + '\n'  # 添加换行符作为结束标记
+        
+        # 通过UART发送数据
+        uart.write(json_data)
+        return True
+    except Exception as e:
+        print("发送数据错误:", e)
+        return False
+
+# 主函数
+def main():
+    face_detection_count = 0  # 人脸检测计数器
+    last_send_time = 0        # 上次发送时间
+    send_interval = 2000      # 发送间隔（毫秒）
+    
+    while True:
+        clock.tick()                             # 更新FPS帧率时钟
+        img = sensor.snapshot()                  # 拍一张照片并返回图像
+
+        faces = img.find_features(face_cascade, threshold=0.75, scale=1.25)
+        
+        current_time = time.ticks_ms()
+        face_detected = len(faces) > 0
+        
+        # 准备发送的数据
+        face_data = {
+            "timestamp": current_time,
+            "face_detected": face_detected,
+            "face_count": len(faces),
+            "device_id": "openmv_face_tracker",
+            "fps": clock.fps()
+        }
+        
+        if face_detected:
+            face = find_max(faces)
+            cx = int(face[0] + face[2] / 2)
+            cy = int(face[1] + face[3] / 2)
+            pan_error = cx - img.width() / 2
+            tilt_error = cy - img.height() / 2
+
+            # 添加人脸详细信息
+            face_data.update({
+                "face_x": face[0],
+                "face_y": face[1],
+                "face_width": face[2],
+                "face_height": face[3],
+                "center_x": cx,
+                "center_y": cy,
+                "pan_error": pan_error,
+                "tilt_error": tilt_error,
+                "pan_angle": pan_servo.angle() if 'pan_servo' in globals() else 0,
+                "tilt_angle": tilt_servo.angle() if 'tilt_servo' in globals() else 0
+            })
+
+            img.draw_rectangle(face)             # 将最大的目标区域框出来
+            img.draw_cross(cx, cy)               # 在目标区域的中心点处画十字
+
+            # PID控制舵机跟踪人脸
+            pan_output = pan_pid.get_pid(pan_error, 1) / 2
+            tilt_output = tilt_pid.get_pid(tilt_error, 1) / 2
+            
+            pan_servo.angle(pan_servo.angle() - pan_output)
+            tilt_servo.angle(tilt_servo.angle() - tilt_output)
+
+            # 异常判断，定义舵机极限位置
+            if pan_servo.angle() > 90:
+                pan_servo.angle(90)
+            if pan_servo.angle() < -90:
+                pan_servo.angle(-90)
+            if tilt_servo.angle() > 45:
+                tilt_servo.angle(45)
+            if tilt_servo.angle() < -60:
+                tilt_servo.angle(-60)
+                
+            face_detection_count += 1
+            
+            # 在图像上显示信息
+            img.draw_string(5, 5, "Face Detected!", color=(255, 255, 255))
+            img.draw_string(5, 15, "FPS: %.2f" % clock.fps(), color=(255, 255, 255))
+            img.draw_string(5, 25, "Faces: %d" % len(faces), color=(255, 255, 255))
+        else:
+            # 没有检测到人脸时显示信息
+            img.draw_string(5, 5, "No Face", color=(255, 255, 255))
+            img.draw_string(5, 15, "FPS: %.2f" % clock.fps(), color=(255, 255, 255))
+        
+        # 定期发送数据（每2秒发送一次，或者检测到状态变化时发送）
+        if (current_time - last_send_time > send_interval) or (face_detected and last_face_detected != face_detected):
+            if send_face_data(face_data):
+                print("数据发送成功:", face_data)
+            else:
+                print("数据发送失败")
+            last_send_time = current_time
+        
+        last_face_detected = face_detected  # 记录上次检测状态
+
+# 程序入口
+if __name__ == '__main__':
+    init_setup()    # 执行初始化函数
+    try:
+        main()      # 执行主函数
+    except KeyboardInterrupt:
+        print("程序被用户中断")
+    except Exception as e:
+        print("程序运行错误:", e)
+    finally:
+        middle()    # 程序结束时使云台舵机复位
+        print("程序结束，舵机已复位")
+        

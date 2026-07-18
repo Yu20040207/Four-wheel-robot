@@ -1,0 +1,366 @@
+import sensor
+import time
+import image
+from pyb import millis
+from math import pi, isnan
+from pyb import Servo
+from pyb import LED
+from pyb import UART
+
+class PID:
+    _kp = _ki = _kd = _integrator = _imax = 0
+    _last_error = _last_derivative = _last_t = 0
+    _RC = 1/(2 * pi * 20)
+    def __init__(self, p=0, i=0, d=0, imax=0):
+        self._kp = float(p)
+        self._ki = float(i)
+        self._kd = float(d)
+        self._imax = abs(imax)
+        self._last_derivative = float('nan')
+
+    def get_pid(self, error, scaler):
+        tnow = millis()
+        dt = tnow - self._last_t
+        output = 0
+        if self._last_t == 0 or dt > 1000:
+            dt = 0
+            self.reset_I()
+        self._last_t = tnow
+        delta_time = float(dt) / float(1000)
+        output += error * self._kp
+        if abs(self._kd) > 0 and dt > 0:
+            if isnan(self._last_derivative):
+                derivative = 0
+                self._last_derivative = 0
+            else:
+                derivative = (error - self._last_error) / delta_time
+            derivative = self._last_derivative + \
+                                     ((delta_time / (self._RC + delta_time)) * \
+                                        (derivative - self._last_derivative))
+            self._last_error = error
+            self._last_derivative = derivative
+            output += self._kd * derivative
+        output *= scaler
+        if abs(self._ki) > 0 and dt > 0:
+            self._integrator += (error * self._ki) * scaler * delta_time
+            if self._integrator < -self._imax: self._integrator = -self._imax
+            elif self._integrator > self._imax: self._integrator = self._imax
+            output += self._integrator
+        return output
+    def reset_I(self):
+        self._integrator = 0
+        self._last_derivative = float('nan')
+
+# 初始化设置
+def init_setup():
+    global pan_servo, tilt_servo, pan_pid, tilt_pid, sensor, clock, face_cascade
+    global red_led, green_led, blue_led, uart
+    global system_state  # 系统状态: 0-初始, 1-准备, 2-跟踪
+
+    # 初始化串口 - 使用UART3，波特率115200
+    uart = UART(3, 115200, timeout_char=200)  # 使用P4(TX)和P5(RX)引脚
+    uart.init(115200, bits=8, parity=None, stop=1, timeout_char=200)  # 初始化串口
+
+    # 初始化RGB LED
+    red_led = LED(1)    # 红色LED
+    green_led = LED(2)  # 绿色LED
+    blue_led = LED(3)   # 蓝色LED
+
+    # 初始状态关闭所有LED
+    red_led.off()
+    green_led.off()
+    blue_led.off()
+
+    # 系统初始状态
+    system_state = 0  # 0-初始状态
+
+    # 加载人脸识别Haar Cascade
+    face_cascade = image.HaarCascade("/rom/haarcascade_frontalface.cascade", stages=25)
+    print("HaarCascade loaded:", face_cascade)
+
+    pan_servo = Servo(1)                         # 实例化云台靠下的舵机
+    tilt_servo = Servo(2)                        # 实例化云台靠上的舵机
+
+    pan_servo.calibration(500,2500,1500)         # 设置舵机脉冲范围为500-2500，中心位置为1500
+    tilt_servo.calibration(500,2500,1500)        # 设置舵机脉冲范围为500-2500，中心位置为1500
+
+    # PID参数
+    pan_pid = PID(p=0.15, i=0, d=0.003, imax=90)    # 水平方向PID
+    tilt_pid = PID(p=0.15, i=0, d=0.006, imax=90)   # 垂直方向PID
+
+    # 初始化时钟
+    clock = time.clock()
+
+    # 开机时舵机复位到中间位置
+    middle()
+    print("System initialized. Send '4' to prepare tracking, '0' to start tracking, '3' to stop.")
+
+# 舵机回归中位
+def middle():
+    pan_servo.angle(0)                     # 舵机转到0度位置
+    tilt_servo.angle(0)                    # 舵机转到0度位置
+    time.sleep(1)                          # 延时1秒
+
+# LED闪烁函数（阻塞版本，简单可靠）
+def blink_led(led, times, delay_ms):
+    for _ in range(times):
+        led.on()
+        time.sleep_ms(delay_ms)
+        led.off()
+        time.sleep_ms(delay_ms)
+
+# 查找识别到的人脸区域中最大区域的函数
+def find_max(faces):
+    max_size = 0
+    max_face = None
+    for face in faces:
+        # 人脸检测返回的是矩形 (x, y, w, h)
+        if face[2] * face[3] > max_size:
+            max_face = face
+            max_size = face[2] * face[3]
+    return max_face
+
+# 初始化摄像头
+def init_camera():
+    sensor.reset()
+    sensor.set_contrast(1)  # 降低对比度，避免过度处理
+    sensor.set_gainceiling(16)
+    sensor.set_pixformat(sensor.GRAYSCALE)
+    sensor.set_framesize(sensor.HQVGA)
+    sensor.skip_frames(10)
+    sensor.set_auto_whitebal(False)
+    sensor.set_auto_exposure(True)  # 启用自动曝光
+    sensor.set_auto_gain(True)      # 启用自动增益
+
+# 简单评估图像亮度
+def evaluate_brightness(img):
+    # 创建一个简单的亮度评估方法
+    # 采样图像中心区域的一些像素点
+    width, height = img.width(), img.height()
+    brightness_sum = 0
+    sample_count = 0
+    
+    # 采样中心区域的一些点
+    for y in range(height//4, 3*height//4, 10):
+        for x in range(width//4, 3*width//4, 10):
+            brightness_sum += img.get_pixel(x, y)
+            sample_count += 1
+    
+    return brightness_sum / sample_count if sample_count > 0 else 128
+
+# 根据亮度调整检测参数
+def get_detection_params(brightness):
+    if brightness < 50:  # 低光环境
+        return {'threshold': 0.4, 'scale_factor': 1.15}
+    elif brightness > 150:  # 高光/背光环境
+        return {'threshold': 0.6, 'scale_factor': 1.25}
+    else:  # 正常光照
+        return {'threshold': 0.5, 'scale_factor': 1.2}
+
+# 主函数
+def main():
+    global system_state, clock, sensor
+
+    # LED闪烁控制变量
+    last_led_toggle = 0
+    blue_led_state = False
+    last_angle_print_time = 0  # 用于控制舵机角度打印频率
+    confirmed_faces = []        # 确认的人脸列表
+    face_confirmation_count = 0 # 人脸确认计数器
+    last_brightness_check = 0   # 上次亮度检查时间
+    current_params = {'threshold': 0.5, 'scale_factor': 1.2}  # 当前检测参数
+
+    while True:
+        clock.tick()  # 更新FPS帧率时钟
+
+        # 检查串口是否有数据
+        if uart.any():
+            data = uart.read(1)  # 读取一个字节
+            print("Received:", data)  # 打印接收到的数据
+
+            # 接收到'4'，准备跟踪
+            if data == b'4':
+                for i in range(2):
+                    green_led.on()
+                    time.sleep_ms(200)
+                    green_led.off()
+                    time.sleep_ms(200)
+                    blue_led.on()
+                    time.sleep_ms(200)
+                    blue_led.off()
+                    time.sleep_ms(200)
+                # 无论当前状态如何，都执行准备操作
+                system_state = 1   # 进入准备状态
+                uart.write("face_on_ready\n")  # 串口输出准备就绪
+                print("Tracking prepared")
+
+                # 初始化摄像头
+                init_camera()
+
+            # 接收到'0'，开始跟踪
+            elif data == b'0':
+                # 无论是否成功进入跟踪状态，都闪烁绿灯两次
+                for i in range(2):
+                    green_led.on()
+                    time.sleep_ms(200)
+                    green_led.off()
+                    time.sleep_ms(200)
+                # 只有在准备状态才能开始跟踪
+                if system_state == 1:
+                    system_state = 2   # 进入跟踪状态
+                    for i in range(5):
+                        green_led.on()
+                        time.sleep_ms(100)
+                        green_led.off()
+                        time.sleep_ms(100)
+                    uart.write("face_follow_on\n")  # 串口输出跟踪开始
+                    print("Tracking started")
+                else:
+                    print("Cannot start tracking: not in prepared state")
+
+            # 接收到'3'，停止跟踪
+            elif data == b'3':
+                # 红灯闪烁两次，然后关闭
+                for _ in range(2):
+                    red_led.on()
+                    time.sleep_ms(200)
+                    red_led.off()
+                    time.sleep_ms(200)
+                # 无论当前状态如何，都执行停止操作
+                system_state = 0   # 回到初始状态
+                uart.write("face_off_init\n")  # 串口输出停止跟踪
+                print("Tracking stopped")
+
+                # 复位舵机
+                middle()
+
+        # 根据系统状态执行不同操作
+        if system_state == 0:  # 初始状态
+            # 确保所有LED关闭
+            red_led.off()
+            green_led.off()
+            blue_led.off()
+            time.sleep_ms(100)  # 短暂延时减少CPU占用
+            continue
+
+        elif system_state == 1:  # 准备状态
+            # 显示实时画面但不进行人脸跟踪
+            img = sensor.snapshot()
+
+            # 准备状态下所有LED保持关闭
+            red_led.off()
+            green_led.off()
+            blue_led.off()
+            time.sleep_ms(100)  # 短暂延时减少CPU占用
+            continue
+
+        elif system_state == 2:  # 跟踪状态
+            img = sensor.snapshot()  # 拍一张照片并返回图像
+            
+            # 定期检查亮度并调整检测参数（每秒检查一次）
+            current_time = time.ticks_ms()
+            if time.ticks_diff(current_time, last_brightness_check) > 1000:
+                brightness = evaluate_brightness(img)
+                current_params = get_detection_params(brightness)
+                last_brightness_check = current_time
+            
+            # 检测人脸
+            faces = img.find_features(face_cascade, 
+                                     threshold=current_params['threshold'], 
+                                     scale_factor=current_params['scale_factor'])
+
+            # 多帧验证 - 减少误检和漏检
+            if faces:
+                last_face_detection_time = current_time
+                face_confirmation_count += 1
+            else:
+                # 如果在超时时间内没有检测到人脸，重置确认计数器
+                if time.ticks_diff(current_time, last_face_detection_time) > 2000:  # 2秒超时
+                    face_confirmation_count = 0
+            
+            # 只有当在多帧中连续检测到人脸时才确认
+            if face_confirmation_count >= 3:  # 需要连续3帧检测到人脸
+                confirmed_faces = faces
+            else:
+                confirmed_faces = []
+
+            # 控制蓝色LED闪烁 - 只有在跟踪状态且检测到人脸时才闪烁
+            if confirmed_faces:
+                current_time = time.ticks_ms()
+                if time.ticks_diff(current_time, last_led_toggle) > 500:  # 500ms间隔闪烁
+                    blue_led_state = not blue_led_state
+                    if blue_led_state:
+                        blue_led.on()
+                    else:
+                        blue_led.off()
+                    last_led_toggle = current_time
+            else:
+                # 未检测到人脸时关闭蓝色LED
+                blue_led.off()
+                blue_led_state = False
+
+            # 跟踪状态下绿灯和红灯保持关闭
+            green_led.off()
+            red_led.off()
+
+            # 如果检测到人脸，则进行跟踪
+            if confirmed_faces:
+                max_face = find_max(confirmed_faces)  # 找到最大的人脸区域
+
+                # 计算人脸中心点与图像中心的误差
+                face_center_x = max_face[0] + max_face[2] // 2
+                face_center_y = max_face[1] + max_face[3] // 2
+
+                pan_error = face_center_x - img.width() // 2
+                tilt_error = face_center_y - img.height() // 2
+
+                # 绘制人脸矩形和中心十字
+                img.draw_rectangle(max_face)
+                img.draw_cross(face_center_x, face_center_y)
+
+                # 计算PID输出
+                pan_output = pan_pid.get_pid(pan_error, 1) / 2
+                tilt_output = tilt_pid.get_pid(tilt_error, 1) / 2
+
+                # 控制舵机转动
+                pan_servo.angle(pan_servo.angle() - pan_output)
+                tilt_servo.angle(tilt_servo.angle() + tilt_output)
+
+                # 打印舵机角度（每秒打印一次，避免过于频繁）
+                current_time = time.ticks_ms()
+                if time.ticks_diff(current_time, last_angle_print_time) > 1000:  # 1秒间隔
+                    print("Pan angle: {:.2f}°, Tilt angle: {:.2f}°".format(pan_servo.angle(), tilt_servo.angle()))
+                    print("Detection params:", current_params)  # 打印当前检测参数
+                    last_angle_print_time = current_time
+
+                # 异常判断，定义舵机极限位置
+                if pan_servo.angle() > 90:
+                    pan_servo.angle(90)
+                if pan_servo.angle() < -90:
+                    pan_servo.angle(-90)
+                if tilt_servo.angle() > 45:
+                    tilt_servo.angle(45)
+                if tilt_servo.angle() < -60:
+                    tilt_servo.angle(-60)
+            else:
+                # 如果没有检测到人脸，重置PID积分项以防止积分饱和
+                pan_pid.reset_I()
+                tilt_pid.reset_I()
+
+# 程序入口
+if __name__ == '__main__':
+    try:
+        init_setup()    # 执行初始化函数
+        main()          # 执行主函数
+    except Exception as e:
+        print("Error:", e)
+        # 确保程序出错时所有LED关闭
+        red_led.off()
+        green_led.off()
+        blue_led.off()
+    finally:
+        middle()    # 程序结束时使云台舵机复位
+        # 确保程序结束时所有LED关闭
+        red_led.on()
+        green_led.off()
+        blue_led.off()

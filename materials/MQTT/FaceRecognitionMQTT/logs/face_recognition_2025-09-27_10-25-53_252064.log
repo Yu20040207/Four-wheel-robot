@@ -1,0 +1,10 @@
+2025-09-27 10:25:53.293 | INFO     | __main__:start:58 - 正在启动人脸识别MQTT服务...
+2025-09-27 10:25:53.294 | INFO     | face_recognizer:setup_models:22 - OpenCV版本: 4.5.5
+2025-09-27 10:25:53.294 | INFO     | face_recognizer:setup_models:26 - 尝试加载模型: C:\Users\86180\AppData\Local\Programs\Python\Python39\lib\site-packages\cv2\data\haarcascade_frontalface_alt.xml
+2025-09-27 10:25:53.314 | INFO     | face_recognizer:setup_models:47 - 分类器创建成功，进行验证...
+2025-09-27 10:25:53.666 | INFO     | face_recognizer:setup_models:54 - 分类器验证通过
+2025-09-27 10:25:53.666 | WARNING  | face_recognizer:setup_recognizer:79 - 无法创建LBPH人脸识别器，使用模拟识别器
+2025-09-27 10:25:53.666 | SUCCESS  | face_recognizer:setup_models:61 - 人脸识别模型初始化完成
+2025-09-27 10:25:53.666 | ERROR    | mqtt_client:setup_mqtt_client:56 - MQTT客户端初始化失败: 'MQTTFaceRecognitionClient' object has no attribute 'config'
+2025-09-27 10:25:53.667 | ERROR    | __main__:start:84 - 服务运行错误: 'MQTTFaceRecognitionClient' object has no attribute 'config'
+2025-09-27 10:25:53.667 | INFO     | __main__:stop:93 - 服务已停止
