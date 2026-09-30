@@ -4,23 +4,24 @@
 #include "stm32f10x.h"
 #include "sys.h"
 
-// ¶¨Òå°ËÂ·´«¸ĞÆ÷ÊıÁ¿
+// å®šä¹‰å…«è·¯ä¼ æ„Ÿå™¨æ•°é‡
 #define SENSOR_COUNT 8
 
-// Í¨ĞÅĞ­Òé¶¨Òå
+// é€šä¿¡åè®®å®šä¹‰
 #define LINEFOLLOW_HEADER1 0x55
 #define LINEFOLLOW_HEADER2 0xAA
 
-// ÉùÃ÷Íâ²¿±äÁ¿
+// å£°æ˜å¤–éƒ¨å˜é‡
 extern volatile uint8_t line_follow_enabled;
 
-// ÔË¶¯¿ØÖÆ±äÁ¿
+// è¿åŠ¨æ§åˆ¶å˜é‡
 extern float Move_X;
 extern float Move_Y;
 extern float Move_Z;
 
-// º¯ÊıÉùÃ÷
+// å‡½æ•°å£°æ˜
 void LineFollow_Init(void);
+void LineFollow_ResetController(void);
 void LineFollow_Process(void);
 void USART3_IRQHandler(void);
 

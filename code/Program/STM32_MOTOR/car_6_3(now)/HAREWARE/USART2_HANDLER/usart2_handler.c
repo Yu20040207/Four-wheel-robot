@@ -15,6 +15,7 @@
 #include "sys.h"
 
 #include "stdio.h"
+#include "LineFollow.h"
 
 
 
@@ -286,6 +287,7 @@ void USART2_ProcessData(void) {
 
         if (strcmp(chassis_cmd.cmd_str, "8") == 0) {
 
+            LineFollow_ResetController();
             line_follow_enabled = 1;
 
             Move_X = 0;
@@ -299,6 +301,7 @@ void USART2_ProcessData(void) {
         } else if (strcmp(chassis_cmd.cmd_str, "9") == 0) {
 
             line_follow_enabled = 0;
+            LineFollow_ResetController();
 
 			Move_X = 0;
 
@@ -403,4 +406,3 @@ ChassisCmdData USART2_GetChassisCmd(void) {
     return chassis_cmd;
 
 }
-

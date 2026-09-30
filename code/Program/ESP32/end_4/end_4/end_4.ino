@@ -22,14 +22,17 @@ const unsigned long WAIST_SWITCH_DEBOUNCE_MS = 30;
 #define BATTERY_ADC_PIN 36              // VP，仅输入 ADC 引脚
 #define BATTERY_R1_OHM 100000.0f
 #define BATTERY_R2_OHM 15000.0f
-#define BATTERY_CAL_FACTOR 1.0f         // 万用表标定：读数偏低则略大于1
+// 万用表标定：显示 25.3V、实测 24.3V → 24.3/25.3 ≈ 0.9605
+#define BATTERY_CAL_FACTOR 0.9605f
 #define BATTERY_SAMPLE_COUNT 16
 #define BATTERY_UPDATE_INTERVAL_MS 1000
-#define BATTERY_V_FULL 27.0f            // 24V 铅酸满电参考，按实际电池可改
-#define BATTERY_V_EMPTY 21.0f
-#define BATTERY_V_WARN 22.0f
-#define BATTERY_V_LOW 21.5f
-#define BATTERY_V_CRITICAL 21.0f
+// 24V 铅酸（12 节 / 两组 12V）：静置满电约 25.2V，不是标称 24V=100%
+// 充电中可达 27~28.8V，静置后回落到约 25.2V 才是满电
+#define BATTERY_V_FULL 25.2f            // 静置满电 ≈ 100%
+#define BATTERY_V_EMPTY 21.6f           // 放电截止 ≈ 0%
+#define BATTERY_V_WARN 22.8f
+#define BATTERY_V_LOW 22.2f
+#define BATTERY_V_CRITICAL 21.6f
 #define BATTERY_LOW_BEEP_INTERVAL_MS 30000
 #define BATTERY_CRIT_BEEP_INTERVAL_MS 15000
 
@@ -489,6 +492,7 @@ char humanTrackingCommand = 0;
 const int GARBAGE_TARGET_DISTANCE_CM = 25;       // 正前方超声波停车距离(cm)
 const unsigned long GARBAGE_APPROACH_TIMEOUT = 8000;  // 接近超时(ms)
 const unsigned long GARBAGE_PICKUP_STEP_DELAY = 3500; // 各步骤间隔(ms)，等腰部/机械臂动作
+const unsigned long ARM_RESET_WAIT_MS = 3500;         // 机械臂收到"9"后，等待其复位完成再动身体
 // ----------------------------------------------------
 
 enum GarbagePickupState {
@@ -897,7 +901,8 @@ enum ActionQueueState {
     ACTION_RESETTING_UPPER_FOR_STANDUP, // 新增：上身复位完成后进行整体复位
     ACTION_UPPER_BODY_RESETTING,  // 新增：上身复位状态
     ACTION_DELAY_THEN_STANDUP,    // 非阻塞等待后起身
-    ACTION_DELAY_THEN_UPPER       // 非阻塞等待后上身启动
+    ACTION_DELAY_THEN_UPPER,      // 非阻塞等待后上身启动
+    ACTION_WAITING_ARM_THEN_BODY_RESET  // 先等机械臂复位，再身体复位
 };
 ActionQueueState actionQueueState = ACTION_IDLE;
 
@@ -1126,6 +1131,47 @@ bool isFullBodyResetComplete() {
             abs(current_servo6_angle - servo6_initial_angle) < 3.0 &&
             abs(current_servo_gpio5_angle - servo_gpio5_initial_angle) < 3.0 &&
             abs(current_servo_gpio15_angle - servo_gpio15_initial_angle) < 3.0);
+}
+
+// 整体复位：先发机械臂"9"，等 ARM_RESET_WAIT_MS 后再动身体舵机
+void startFullBodyResetArmFirst() {
+    Serial.println("9");  // 先让机械臂复位
+    markSerialCommandDedup("9");
+    actionDelayUntilMs = millis() + ARM_RESET_WAIT_MS;
+    actionQueueState = ACTION_WAITING_ARM_THEN_BODY_RESET;
+    standupState = STANDUP_IDLE;
+    safetyTriggered = false;
+    emergencyReset = false;
+}
+
+// 机械臂等待结束后，开始身体舵机复位
+void beginBodyServoResetAfterArm() {
+    servo0_angle = servo0_initial_angle;
+    servo1_angle = servo1_initial_angle;
+    servo2_angle = servo2_initial_angle;
+    servo3_angle = servo3_initial_angle;
+    servo4_angle = servo4_initial_angle;
+    servo5_angle = servo5_initial_angle;
+    servo6_angle = servo6_initial_angle;
+
+    update_servo0 = true;
+    update_servo1 = true;
+    update_servo2 = true;
+    update_servo3 = true;
+    update_servo4 = true;
+    update_servo5 = true;
+    update_servo6 = true;
+
+    controlGpioServos(false);
+
+    fullBodyStandupCompleted = false;
+    upperBodyStandupCompleted = false;
+    halfBodyStandupCompleted = false;
+    halfBodyActivated = false;
+    upperBodyActivated = false;
+    standupCompleted = false;
+
+    actionQueueState = ACTION_RESETTING;
 }
 
 // 获取输出字符串的函数
@@ -2060,34 +2106,8 @@ void callback(char *topic, byte *payload, unsigned int length) {
             upperBodyActivated = false;  // 清除标志
             upperBodyStandupCompleted = false; // 清除完成标志
         } else {
-            // 原来的整体复位逻辑（舵机异步运动，无需阻塞等待）
-            Serial.println("9");
-            servo0_angle = servo0_initial_angle;
-            servo1_angle = servo1_initial_angle;
-            servo2_angle = servo2_initial_angle;
-            servo3_angle = servo3_initial_angle;
-            servo4_angle = servo4_initial_angle;
-            servo5_angle = servo5_initial_angle;
-            servo6_angle = servo6_initial_angle;
-
-            update_servo0 = true;
-            update_servo1 = true;
-            update_servo2 = true;
-            update_servo3 = true;
-            update_servo4 = true;
-            update_servo5 = true;
-            update_servo6 = true;
-
-            controlGpioServos(false);
-
-            standupState = STANDUP_IDLE;
-            safetyTriggered = false;
-            emergencyReset = false;
-            
-            // 清除所有完成标志
-            fullBodyStandupCompleted = false;
-            upperBodyStandupCompleted = false;
-            halfBodyStandupCompleted = false;
+            // 整体复位：机械臂先复位，再身体复位
+            startFullBodyResetArmFirst();
         }
         return;
     } else if (String(topic) == String(mqtt_username) + "/" + project + "/" + button5_topic) {
@@ -2450,9 +2470,11 @@ void processSerialData(String data) {
         sendArmActionCommand("1");
     } else if (data == "2") {
         sendArmActionCommand("2");
-    } else if (data == "3") {
+    // 离线语音板使用具名命令，避免数字 3/4 被机械臂控制板误当成抬手动作。
+    // 保留数字命令，兼容现有的网络和调试控制入口。
+    } else if (data == "3" || data == "body_reset") {
         invokeLocalMqttCommand(button3_topic, "3");
-    } else if (data == "4") {
+    } else if (data == "4" || data == "body_stand") {
         // 检查整体起身是否已经完成，如果已完成，直接忽略指令
         if (fullBodyStandupCompleted) {
             // 忽略指令，不执行任何操作
@@ -3028,9 +3050,17 @@ void loop() {
             abs(current_servo6_angle - servo6_initial_angle) < 3.0 &&
             abs(current_servo_gpio5_angle - servo_gpio5_initial_angle) < 3.0 &&
             abs(current_servo_gpio15_angle - servo_gpio15_initial_angle) < 3.0) {
-            // 复位完成，非阻塞等待 500ms 确保稳定
-            actionDelayUntilMs = millis() + 500;
-            actionQueueState = ACTION_WAITING;
+            // 复位完成
+            if (lastTriggeredButton == 13 || lastTriggeredButton == 15) {
+                // 半身/上身流程：短暂等待后再执行后续动作
+                actionDelayUntilMs = millis() + 500;
+                actionQueueState = ACTION_WAITING;
+            } else {
+                // 整体复位完成
+                actionQueueState = ACTION_IDLE;
+                lastTriggeredButton = 0;
+                shortBeep();
+            }
         }
     } 
     else if (actionQueueState == ACTION_RESETTING_FOR_STANDUP) {
@@ -3115,6 +3145,12 @@ void loop() {
     else if (actionQueueState == ACTION_DELAY_THEN_UPPER) {
         if (millis() >= actionDelayUntilMs) {
             beginUpperBodyStandup();
+        }
+    }
+    else if (actionQueueState == ACTION_WAITING_ARM_THEN_BODY_RESET) {
+        // 机械臂复位等待中：身体先不动，时间到后再复位身体舵机
+        if (millis() >= actionDelayUntilMs) {
+            beginBodyServoResetAfterArm();
         }
     }
     else if (actionQueueState == ACTION_WAITING) {
