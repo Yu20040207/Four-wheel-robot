@@ -87,3 +87,22 @@ code/**/build/
 code/**/dist/
 code/**/managed_components/
 code/**/venv/
+
+# Keep these AFTER the materials allowlist above.
+# Keil user state and generated outputs (already tracked files need separate cleanup)
+*.uvgui.*
+*.uvguix.*
+*.uvopt
+*.uvoptx
+*.map
+*.lst
+**/Listings/
+**/OBJ/
+**/OUTPUT/
+
+# Editor recovery and flashing-tool temporary files
+*.autosave*
+*~RF*.TMP
+**/dl_temp/
+**/logs/
+*.bin_rep
