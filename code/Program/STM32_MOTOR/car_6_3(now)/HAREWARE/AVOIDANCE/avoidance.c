@@ -206,6 +206,9 @@ void Avoidance_Init(void) {
 
 // ????????????
 void Avoidance_Force_Exit(void) {
+    /* Reset the producer even when it was in autonomous straight driving. */
+    state_timer = 0;
+    avoidance_state = AVOIDANCE_IDLE;
     if (avoidance_active) {
         avoidance_active = 0;
         avoidance_state = AVOIDANCE_IDLE;

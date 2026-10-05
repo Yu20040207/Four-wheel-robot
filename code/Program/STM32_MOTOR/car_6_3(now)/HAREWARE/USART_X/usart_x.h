@@ -84,6 +84,7 @@ void Usart2_Init(u32 bound);
 void Usart3_Init(u32 bound);
 
 int USART1_IRQHandler(void);
+void USART1_DiscardMotionFrame(void);
 
 void data_process(void);
 u8 Check_Sum(unsigned char Count_Number,unsigned char Mode);

@@ -24,6 +24,7 @@ extern volatile uint8_t line_follow_enabled;
 // ????????
 void USART2_Init(void);
 void USART2_ProcessData(void);
+void USART2_DiscardPendingMotion(void);
 uint8_t USART2_UltrasonicUpdated(void);
 UltrasonicData USART2_GetUltrasonicData(void);
 uint8_t USART2_ChassisCmdUpdated(void);

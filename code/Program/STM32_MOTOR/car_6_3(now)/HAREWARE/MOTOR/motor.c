@@ -1,4 +1,5 @@
 #include "motor.h"
+#include "control.h"
 
 void Motor_Init(void)
 {    
@@ -54,11 +55,21 @@ void Motor_Safe_Start(void)
     delay_ms(200);  // ������200ms
     
     // ����������
-    STBY = 1;
+    {
+        uint32_t primask = __get_PRIMASK();
+        __disable_irq();
+        if (Chassis_IsStopped()) {
+            MOTOR_EMERGENCY_STOP();
+            __set_PRIMASK(primask);
+            return;
+        }
+        STBY = 1;
     
-    // �ٴ�ȷ��PWMΪ0
-    TIM8->CCR1 = 0;
-    TIM8->CCR2 = 0;
-    TIM8->CCR3 = 0;
-    TIM8->CCR4 = 0;
+        // �ٴ�ȷ��PWMΪ0
+        TIM8->CCR1 = 0;
+        TIM8->CCR2 = 0;
+        TIM8->CCR3 = 0;
+        TIM8->CCR4 = 0;
+        __set_PRIMASK(primask);
+    }
 }

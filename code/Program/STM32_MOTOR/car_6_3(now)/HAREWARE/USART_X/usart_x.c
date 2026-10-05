@@ -1,7 +1,19 @@
 #include "usart_x.h"
 #include "avoidance.h"
+#include "control.h"
+#include <string.h>
 
 SEND_DATA Send_Data;
+static u8 motion_frame_count = 0;
+
+void USART1_DiscardMotionFrame(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    motion_frame_count = 0;
+    memset(Receive_Data, 0, sizeof(Receive_Data));
+    __set_PRIMASK(primask);
+}
 
 PointDataProcessDef Dataprocess[1000] ;//更新50个数据
 LiDARFrameTypeDef Pack_Data;
@@ -155,25 +167,29 @@ Output  : none
 **************************************************************************/
 int USART1_IRQHandler(void)
 {
-	static u8 Count=0;
+	uint32_t primask;
 	u8 Usart_Receive;
 	if(USART_GetITStatus(USART1, USART_IT_RXNE)!=RESET)
 	{
 		USART_ClearITPendingBit(USART1, USART_IT_RXNE);
 		Usart_Receive = USART_ReceiveData(USART1);//Read the data //读取数据
+        if (Chassis_IsStopped()) {
+            motion_frame_count = 0;
+            return 0;
+        }
 		//Fill the array with serial data
 		//串口数据填入数组
-    Receive_Data[Count]=Usart_Receive;
+    Receive_Data[motion_frame_count]=Usart_Receive;
 		// Ensure that the first data in the array is FRAME_HEADER
 		//确保数组第一个数据为FRAME_HEADER
-		if(Usart_Receive == FRAME_HEADER||Count>0) 
-			Count++; 
+		if(Usart_Receive == FRAME_HEADER||motion_frame_count>0)
+			motion_frame_count++;
 		else 
-			Count=0;
+			motion_frame_count=0;
 		
-		if (Count == 11) //Verify the length of the packet //验证数据包的长度
+		if (motion_frame_count == 11) //Verify the length of the packet //验证数据包的长度
 		{   
-			Count=0; //Prepare for the serial port data to be refill into the array //为串口数据重新填入数组做准备
+			motion_frame_count=0; //Prepare for the serial port data to be refill into the array //为串口数据重新填入数组做准备
 			if(Receive_Data[10] == FRAME_TAIL) //Verify the frame tail of the packet //验证数据包的帧尾
 			{
 				//Data exclusionary or bit check calculation, mode 0 is sent data check
@@ -182,6 +198,9 @@ int USART1_IRQHandler(void)
 				{	
 					//All modes flag position 0, USART3 control mode
 					//所有模式标志位置0，为Usart1控制模式						
+                    primask = __get_PRIMASK();
+                    __disable_irq();
+                    if (!Chassis_IsStopped()) {
 					Mode = Normal_Mode;
 					Car_Mode = ROS_Mode;
 					//Calculate the target speed of three axis from serial data, unit m/s
@@ -189,6 +208,8 @@ int USART1_IRQHandler(void)
 					Move_X=XYZ_Target_Speed_transition(Receive_Data[3],Receive_Data[4]);
 					Move_Y=XYZ_Target_Speed_transition(Receive_Data[5],Receive_Data[6]);
 					Move_Z=XYZ_Target_Speed_transition(Receive_Data[7],Receive_Data[8]);
+                    }
+                    __set_PRIMASK(primask);
 				}		
 			}
 		}
