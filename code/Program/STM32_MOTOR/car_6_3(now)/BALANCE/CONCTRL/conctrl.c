@@ -1,4 +1,5 @@
 #include "conctrl.h"
+#include "control.h"
 
 Motor_parameter MOTOR_A, MOTOR_B, MOTOR_C, MOTOR_D;
 Encoder OriginalEncoder;
@@ -9,16 +10,26 @@ static u8 motor_safety_latched = 0;
 
 void Set_Open_Loop_Motor(u8 enable)
 {
-	open_loop_motor_test = enable ? 1 : 0;
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
+	open_loop_motor_test = (enable && !Chassis_IsStopped()) ? 1 : 0;
 	if (!open_loop_motor_test) {
 		Reset_Velocity_PI();
 	}
+	__set_PRIMASK(primask);
 }
 
 void Drive_Motor(float Vx,float Vy,float Vz)   //-1.5-1.5
 {
+	uint32_t primask = __get_PRIMASK();
 	float amplitude=3.5; //Wheel target speed limit //����Ŀ���ٶ��޷�
 	
+	__disable_irq();
+	if (Chassis_IsStopped()) {
+		Chassis_Stop_All();
+		__set_PRIMASK(primask);
+		return;
+	}
 	Smooth_control(Vx,Vy,Vz); //Smoothing the input speed //�������ٶȽ���ƽ������
   
 	//Get the smoothed data 
@@ -38,6 +49,7 @@ void Drive_Motor(float Vx,float Vy,float Vz)   //-1.5-1.5
 	MOTOR_B.Target=target_limit_float(MOTOR_B.Target,-amplitude,amplitude); 
 	MOTOR_C.Target=target_limit_float(MOTOR_C.Target,-amplitude,amplitude); 
 	MOTOR_D.Target=target_limit_float(MOTOR_D.Target,-amplitude,amplitude); 
+	__set_PRIMASK(primask);
 }
 
 int TIM6_IRQHandler(void)
@@ -57,6 +69,10 @@ int TIM6_IRQHandler(void)
 
         // ԭ�еĿ����߼�
         Get_Velocity_Form_Encoder();
+        if (Chassis_IsStopped()) {
+            Chassis_Stop_All();
+            return 0;
+        }
         Key_Scan();
         Motor_Safety_Check();
 
@@ -129,6 +145,13 @@ Output  : none
 **************************************************************************/
 void Set_Pwm(int motor_a,int motor_b,int motor_c,int motor_d)
 {
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
+	if (Chassis_IsStopped()) {
+		MOTOR_EMERGENCY_STOP();
+		__set_PRIMASK(primask);
+		return;
+	}
 	// 每次输出 PWM 前确保驱动芯片退出待机（TB6612 STBY 必须为高）
 	MOTOR_ENABLE();
 	TIM_CtrlPWMOutputs(TIM8, ENABLE);
@@ -149,6 +172,7 @@ void Set_Pwm(int motor_a,int motor_b,int motor_c,int motor_d)
 	if (motor_d == 0)       DIN1 = 0, DIN2 = 0, PWMD = 0;
 	else if (motor_d < 0)   DIN1 = 1, DIN2 = 0, PWMD = -motor_d;
 	else                    DIN1 = 0, DIN2 = 1, PWMD = motor_d;
+	__set_PRIMASK(primask);
 }
 
 void Get_RC(void)
@@ -533,6 +557,8 @@ void Reset_Smooth_Control(void)
 
 void Chassis_Stop_All(void)
 {
+	uint32_t primask = __get_PRIMASK();
+	__disable_irq();
 	Move_X = 0.0f;
 	Move_Y = 0.0f;
 	Move_Z = 0.0f;
@@ -542,7 +568,8 @@ void Chassis_Stop_All(void)
 	motor_stall_ticks[1] = 0;
 	motor_stall_ticks[2] = 0;
 	motor_stall_ticks[3] = 0;
-	motor_safety_latched = 0;
+	/* A normal STOP must never clear the hardware fault latch. */
+	__set_PRIMASK(primask);
 }
 
 int Incremental_PI_A (float Encoder,float Target)

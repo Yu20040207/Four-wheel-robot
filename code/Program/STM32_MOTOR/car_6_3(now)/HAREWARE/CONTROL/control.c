@@ -3,6 +3,7 @@
 #include "avoidance.h"
 #include "voice_control.h"
 #include "conctrl.h"
+#include "LineFollow.h"
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
@@ -11,6 +12,75 @@ float Move_X = 0.0f;
 float Move_Y = 0.0f;
 float Move_Z = 0.0f;
 int i;
+
+
+/* Global STOP is distinct from an internal zero-speed target. */
+static volatile uint8_t chassis_stop_latched = 0;
+static volatile uint8_t chassis_stop_pending = 0;
+
+uint8_t Chassis_IsStopped(void)
+{
+    return chassis_stop_latched;
+}
+
+uint8_t Chassis_StopPending(void)
+{
+    return chassis_stop_pending;
+}
+
+void Chassis_RequestStop(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    chassis_stop_latched = 1;
+    chassis_stop_pending = 1;
+    MOTOR_EMERGENCY_STOP();
+    __set_PRIMASK(primask);
+}
+
+/* Called with interrupts masked; no UART output or blocking operations. */
+static void Chassis_ClearRuntime(void)
+{
+    line_follow_enabled = 0;
+    LineFollow_ResetController();
+    Avoidance_SetAutonomousMode(0);
+    Voice_Control_Disable();
+    Mode = Normal_Mode;
+    Car_Mode = ROS_Mode;
+    Flag_Direction = 0;
+    Flag_Left = 0;
+    Flag_Right = 0;
+    Set_Open_Loop_Motor(0);
+    USART1_DiscardMotionFrame();
+    USART2_DiscardPendingMotion();
+    Chassis_Stop_All();
+}
+
+void Chassis_ServiceStop(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (chassis_stop_pending) {
+        Chassis_ClearRuntime();
+        chassis_stop_pending = 0;
+    }
+    __set_PRIMASK(primask);
+}
+
+/* START grants manual control only; it never replays a mode or target. */
+uint8_t Chassis_Start(void)
+{
+    uint8_t started = 0;
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (chassis_stop_latched && !chassis_stop_pending) {
+        Chassis_ClearRuntime();
+        chassis_stop_latched = 0;
+        started = 1;
+    }
+    __set_PRIMASK(primask);
+    return started;
+}
 
 typedef struct {
     char cmd[3];
@@ -118,8 +188,8 @@ static int Set_Motor_Speed_From_Velocity_Command(const char *cmd_str)
 static void Set_Motor_Speed_From_Command(const char* cmd_str)
 {
     if (cmd_str && (strcmp(cmd_str, "S") == 0 || strcmp(cmd_str, "stop") == 0)) {
-        Chassis_Stop_All();
-        Voice_Control_SetDirection("S");
+        Chassis_RequestStop();
+        Chassis_ServiceStop();
         return;
     }
 
@@ -143,10 +213,13 @@ static void Set_Motor_Speed_From_Command(const char* cmd_str)
 }
 
 void Motor_Control_Update(void) {
-    if(USART2_ChassisCmdUpdated()) {
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    if (!Chassis_IsStopped() && USART2_ChassisCmdUpdated()) {
         ChassisCmdData cmd = USART2_GetChassisCmd();
         Set_Motor_Speed_From_Command(cmd.cmd_str);
     }
+    __set_PRIMASK(primask);
 }
 
 void Motor_Control_Init(void) {

@@ -1,4 +1,5 @@
 #include "usart2_handler.h"
+#include "control.h"
 
 #include "voice_control.h"
 
@@ -24,6 +25,10 @@
 static uint8_t rx_buffer[64] = {0};
 
 static uint8_t rx_index = 0;
+
+/* Invalid raw text must not be filtered into an authorization. */
+static uint8_t rx_invalid = 0;
+static volatile uint8_t start_ready = 0;
 
 
 
@@ -165,7 +170,22 @@ void USART2_IRQHandler(void) {
 
                 
 
-                if (isdigit(rx_buffer[0])) {
+                /* STOP bypasses the mode gates and the single command slot. */
+                if (strcmp((char *)rx_buffer, "S") == 0 ||
+                    strcmp((char *)rx_buffer, "stop") == 0 ||
+                    strcmp((char *)rx_buffer, "7") == 0 ||
+                    strcmp((char *)rx_buffer, "9") == 0 ||
+                    strcmp((char *)rx_buffer, "B") == 0) {
+                    Chassis_RequestStop();
+                    chassis_data_ready = 0;
+                    chassis_cmd_updated = 0;
+                    start_ready = 0;
+                } else if (!rx_invalid && strcmp((char *)rx_buffer, "START") == 0) {
+                    /* A request arriving before STOP cleanup is discarded. */
+                    if (Chassis_IsStopped() && !Chassis_StopPending()) {
+                        start_ready = 1;
+                    }
+                } else if (!Chassis_IsStopped() && isdigit(rx_buffer[0])) {
 
                     if(rx_index == 1 && (rx_buffer[0] == '6' || rx_buffer[0] == '7' ||
 
@@ -185,7 +205,7 @@ void USART2_IRQHandler(void) {
 
                 } 
 
-                else if (isalpha(rx_buffer[0])) {
+                else if (!Chassis_IsStopped() && isalpha(rx_buffer[0])) {
 
                     if (!line_follow_enabled) {
 
@@ -200,6 +220,7 @@ void USART2_IRQHandler(void) {
             }
 
             rx_index = 0;
+            rx_invalid = 0;
 
         } 
 
@@ -209,8 +230,12 @@ void USART2_IRQHandler(void) {
 
                 rx_buffer[rx_index++] = received_char;
 
+            } else {
+                rx_invalid = 1;
             }
 
+        } else {
+            rx_invalid = 1;
         }
 
     }
@@ -220,6 +245,21 @@ void USART2_IRQHandler(void) {
 
 
 void USART2_ProcessData(void) {
+    uint32_t primask;
+    Chassis_ServiceStop();
+    primask = __get_PRIMASK();
+    __disable_irq();
+
+    if (start_ready) {
+        start_ready = 0;
+        Chassis_Start();
+        __set_PRIMASK(primask);
+        return;
+    }
+    if (Chassis_IsStopped()) {
+        __set_PRIMASK(primask);
+        return;
+    }
 
     if (data_ready) {
 
@@ -356,6 +396,7 @@ void USART2_ProcessData(void) {
         chassis_data_ready = 0;
 
     }
+    __set_PRIMASK(primask);
 
 }
 
@@ -405,4 +446,22 @@ ChassisCmdData USART2_GetChassisCmd(void) {
 
     return chassis_cmd;
 
+}
+
+/* Discard every pre-stop command, mode request, update and partial line. */
+void USART2_DiscardPendingMotion(void)
+{
+    uint32_t primask = __get_PRIMASK();
+    __disable_irq();
+    chassis_data_ready = 0;
+    chassis_cmd_updated = 0;
+    data_ready = 0;
+    ultrasonic_updated = 0;
+    start_ready = 0;
+    rx_index = 0;
+    rx_invalid = 0;
+    memset(rx_buffer, 0, sizeof(rx_buffer));
+    memset(chassis_line, 0, sizeof(chassis_line));
+    memset(&chassis_cmd, 0, sizeof(chassis_cmd));
+    __set_PRIMASK(primask);
 }
