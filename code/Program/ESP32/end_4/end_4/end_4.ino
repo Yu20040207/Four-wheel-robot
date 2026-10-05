@@ -86,6 +86,8 @@ int frontLeftDistance = 0;
 int frontDistance = 0;
 int frontRightDistance = 0;
 int backDistance = 0;
+int rearLeftDistance = 0;
+int rearRightDistance = 0;
 
 // 定义最小安全距离阈值（单位：厘米）
 const float MIN_SAFE_DISTANCE = 35.0;
@@ -727,6 +729,10 @@ const char *button14_topic = "button14"; // 新增按钮14主题（第三关节�
 const char *button15_topic = "button15"; // 新增按钮13主题（半身起身）
 const char *button16_topic = "button16"; // 新增按钮14主题（半身复位）
 const char *button17_topic = "button17"; // 新增按钮17主题
+const char *left_90_topic = "left_90";
+const char *right_90_topic = "right_90";
+const char *forward_1m_topic = "forward_1m";
+const char *retreat_1m_topic = "retreat_1m";
 
 // 手柄主题
 const char *body_topic = "body";
@@ -796,7 +802,15 @@ const int UNSAFE_THRESHOLD = 1; // 优化：连续1次不安全即触发
 // 新增：串口控制变量
 char currentCommand = 0;
 unsigned long commandStartTime = 0;
-const unsigned long COMMAND_DURATION = 1500; // 1.5秒持续时间
+unsigned long currentCommandDuration = 0;
+const unsigned long PRESET_TRANSLATE_1M_DURATION_MS = 1500;
+const unsigned long PRESET_TURN_90_DURATION_MS = 650;
+const unsigned long PRESET_ULTRASONIC_WAIT_MS = 1000;
+char presetMotionPending = 0;
+unsigned long presetMotionRequestTime = 0;
+unsigned long lastUltrasonicFrameMs = 0;
+bool presetMotionSafetyEnabled = false;
+bool presetMotionOwnsVoiceSafety = false;
 
 // 新增：超声波数据接收控制
 bool ultrasonicDataReceiving = false; // 是否接收超声波数据
@@ -812,9 +826,11 @@ bool button8_state = false;
 bool ultrasonicHardwareEnabled = false;
 bool chassisAutonomousAvoidanceEnabled = false;
 
+void sendVoiceMoveCommand(const char *cmd);
+
 // 同步超声波：ESP32接收 + 机械臂端四路超声波硬件开关
 void syncUltrasonicReceiving() {
-    bool needUltrasonic = button6_state || voiceControlEnabled;
+    bool needUltrasonic = button6_state || voiceControlEnabled || presetMotionSafetyEnabled;
     ultrasonicDataReceiving = needUltrasonic;
 
     if (needUltrasonic != ultrasonicHardwareEnabled) {
@@ -848,12 +864,8 @@ bool isUltrasonicTooClose(int distanceCm) {
     return distanceCm > 0 && distanceCm < VOICE_OBSTACLE_CM;
 }
 
-// 检查语音控制方向是否被障碍物阻挡
-bool isVoiceDirectionBlocked(char cmd) {
-    if (!voiceControlEnabled) {
-        return false;
-    }
-
+// 检查预设运动方向是否被障碍物阻挡
+bool isMotionDirectionBlocked(char cmd) {
     switch (cmd) {
         case 'a':
             // 前进：正前 + 左前 + 右前，任一 < 15cm 则停止
@@ -861,28 +873,118 @@ bool isVoiceDirectionBlocked(char cmd) {
                    isUltrasonicTooClose(frontLeftDistance) ||
                    isUltrasonicTooClose(frontRightDistance);
         case 'b':
-            // 后退：正后方
-            return isUltrasonicTooClose(backDistance);
+            // 后退：正后 + 左后 + 右后
+            return isUltrasonicTooClose(backDistance) ||
+                   isUltrasonicTooClose(rearLeftDistance) ||
+                   isUltrasonicTooClose(rearRightDistance);
         case 'c':
-            // 左旋转：左前障碍
-            return isUltrasonicTooClose(frontLeftDistance);
+            // 左旋转：左前 + 左后
+            return isUltrasonicTooClose(frontLeftDistance) ||
+                   isUltrasonicTooClose(rearLeftDistance);
         case 'd':
-            // 右旋转：右前障碍
-            return isUltrasonicTooClose(frontRightDistance);
+            // 右旋转：右前 + 右后
+            return isUltrasonicTooClose(frontRightDistance) ||
+                   isUltrasonicTooClose(rearRightDistance);
         default:
             return false;
     }
 }
 
-// 语音避障触发：停止底盘并蜂鸣一声
-void stopVoiceCommandForObstacle() {
-    if (currentCommand == 0) {
-        return;
+unsigned long getPresetMotionDuration(char cmd) {
+    return (cmd == 'c' || cmd == 'd')
+               ? PRESET_TURN_90_DURATION_MS
+               : PRESET_TRANSLATE_1M_DURATION_MS;
+}
+
+const char* getPresetMotionSerialCommand(char cmd) {
+    switch (cmd) {
+        case 'a': return "G5";
+        case 'b': return "B5";
+        case 'c': return "TL";
+        case 'd': return "TR";
+        default: return "S";
     }
+}
+
+void finishPresetMotion(bool obstacleStop) {
     Serial2.println("S");
     currentCommand = 0;
     commandStartTime = 0;
-    shortBeep();
+    currentCommandDuration = 0;
+    presetMotionPending = 0;
+
+    if (presetMotionOwnsVoiceSafety && !voiceControlEnabled) {
+        Serial2.println("B");
+    }
+    presetMotionOwnsVoiceSafety = false;
+    presetMotionSafetyEnabled = false;
+    syncUltrasonicReceiving();
+
+    if (obstacleStop) {
+        shortBeep();
+    }
+}
+
+void startPresetMotionNow(char cmd) {
+    currentCommand = cmd;
+    commandStartTime = millis();
+    currentCommandDuration = getPresetMotionDuration(cmd);
+    presetMotionPending = 0;
+    sendVoiceMoveCommand(getPresetMotionSerialCommand(cmd));
+}
+
+void requestPresetMotion(char cmd) {
+    if (cmd < 'a' || cmd > 'd') {
+        return;
+    }
+
+    if (currentCommand != 0 || presetMotionPending != 0) {
+        finishPresetMotion(false);
+    }
+
+    presetMotionSafetyEnabled = true;
+    presetMotionOwnsVoiceSafety = !voiceControlEnabled;
+    presetMotionPending = cmd;
+    presetMotionRequestTime = millis();
+    lastUltrasonicFrameMs = 0;
+    syncUltrasonicReceiving();
+
+    if (presetMotionOwnsVoiceSafety) {
+        Serial2.println("A");
+    }
+}
+
+void processPresetMotionState() {
+    if (presetMotionPending == 0) {
+        return;
+    }
+
+    unsigned long now = millis();
+    bool freshFrame = lastUltrasonicFrameMs != 0 &&
+                      (long)(lastUltrasonicFrameMs - presetMotionRequestTime) >= 0;
+    if (!freshFrame) {
+        if (now - presetMotionRequestTime >= PRESET_ULTRASONIC_WAIT_MS) {
+            finishPresetMotion(true);
+        }
+        return;
+    }
+
+    if (isMotionDirectionBlocked(presetMotionPending)) {
+        finishPresetMotion(true);
+        return;
+    }
+
+    startPresetMotionNow(presetMotionPending);
+}
+
+bool isPresetTriggerPayload(const String& data) {
+    String normalized = data;
+    normalized.trim();
+    normalized.toLowerCase();
+    return normalized.length() > 0 &&
+           normalized != "0" &&
+           normalized != "false" &&
+           normalized != "off";
 }
 
 // 新增：人体跟踪开关状态
@@ -1030,7 +1132,12 @@ bool isDuplicateSerialCommand(const String& data) {
 
 bool isButtonMqttTopic(const String& topicStr) {
     const String btnPrefix = String(mqtt_username) + "/" + project + "/button";
-    return topicStr.startsWith(btnPrefix);
+    const String topicPrefix = String(mqtt_username) + "/" + project + "/";
+    return topicStr.startsWith(btnPrefix) ||
+           topicStr == topicPrefix + left_90_topic ||
+           topicStr == topicPrefix + right_90_topic ||
+           topicStr == topicPrefix + forward_1m_topic ||
+           topicStr == topicPrefix + retreat_1m_topic;
 }
 
 bool shouldIgnoreDuplicateMqtt(const String& topic, const String& data) {
@@ -1274,6 +1381,7 @@ void parseUltrasonicData(String data) {
         frontDistance = data.substring(firstComma + 1, secondComma).toInt();
         frontRightDistance = data.substring(secondComma + 1, thirdComma).toInt();
         backDistance = data.substring(thirdComma + 1).toInt();
+        lastUltrasonicFrameMs = millis();
         
         unsigned long now = millis();
         if (now - lastUltrasonicSendTime < ULTRASONIC_SEND_INTERVAL) {
@@ -1609,6 +1717,24 @@ void callback(char *topic, byte *payload, unsigned int length) {
         }
     }
 
+    // 四个米思奇预设运动按键；忽略松开消息，避免一次点击重复执行。
+    if (topicStr == String(mqtt_username) + "/" + project + "/" + left_90_topic) {
+        if (isPresetTriggerPayload(data)) requestPresetMotion('c');
+        return;
+    }
+    if (topicStr == String(mqtt_username) + "/" + project + "/" + right_90_topic) {
+        if (isPresetTriggerPayload(data)) requestPresetMotion('d');
+        return;
+    }
+    if (topicStr == String(mqtt_username) + "/" + project + "/" + forward_1m_topic) {
+        if (isPresetTriggerPayload(data)) requestPresetMotion('a');
+        return;
+    }
+    if (topicStr == String(mqtt_username) + "/" + project + "/" + retreat_1m_topic) {
+        if (isPresetTriggerPayload(data)) requestPresetMotion('b');
+        return;
+    }
+
     // 处理button17开关（跳舞）
     if (String(topic) == String(String(mqtt_username) + "/" + project + "/" + button17_topic)) {
         sendArmActionCommand("G");
@@ -1682,6 +1808,10 @@ void callback(char *topic, byte *payload, unsigned int length) {
         } else {
             currentCommand = 0;
             commandStartTime = 0;
+            currentCommandDuration = 0;
+            presetMotionPending = 0;
+            presetMotionSafetyEnabled = false;
+            presetMotionOwnsVoiceSafety = false;
             Serial2.println("S");
             Serial2.println("B");
             syncUltrasonicReceiving();
@@ -2342,6 +2472,10 @@ void subscribeMainMqttTopics() {
     client.subscribe(String(String(mqtt_username) + "/" + project + "/" + button15_topic).c_str());
     client.subscribe(String(String(mqtt_username) + "/" + project + "/" + button16_topic).c_str());
     client.subscribe(String(String(mqtt_username) + "/" + project + "/" + button17_topic).c_str());
+    client.subscribe(String(String(mqtt_username) + "/" + project + "/" + left_90_topic).c_str());
+    client.subscribe(String(String(mqtt_username) + "/" + project + "/" + right_90_topic).c_str());
+    client.subscribe(String(String(mqtt_username) + "/" + project + "/" + forward_1m_topic).c_str());
+    client.subscribe(String(String(mqtt_username) + "/" + project + "/" + retreat_1m_topic).c_str());
     client.subscribe(String(String(mqtt_username) + "/" + project + "/" + body_topic).c_str());
     client.subscribe(String(String(mqtt_username) + "/" + project + "/" + controller_topic).c_str());
     client.subscribe(full_topic.c_str());
@@ -2372,6 +2506,8 @@ void setup() {
 
     distanceLeft = 0;
     distanceRight = 0;
+    rearLeftDistance = 0;
+    rearRightDistance = 0;
 
     pinMode(2, OUTPUT);
     pinMode(4, INPUT);
@@ -2719,40 +2855,12 @@ void processSerialData(String data) {
         // 只有在语音控制开启时才处理a,b,c,d,e指令
         if (voiceControlEnabled) {
             if (data == "e") {
-                // 接收到e，立即发送停止指令S
-                // 打断当前正在执行的任何命令
-                currentCommand = 0;  // 重置当前命令状态
-                commandStartTime = 0; // 重置命令开始时间
-                Serial2.println("S"); // 立即发送停止指令
-                longBeep(); 
-                return; // 直接返回，不执行其他逻辑
-            }
-
-            char moveCmd = data.charAt(0);
-            if (isVoiceDirectionBlocked(moveCmd)) {
-                shortBeep();
+                finishPresetMotion(false);
+                longBeep();
                 return;
             }
-            
-            // 只有在当前没有活动命令或e命令已打断时，才执行a,b,c,d命令
-            if (data == "a") {
-                currentCommand = 'a';
-                commandStartTime = millis();
-                sendVoiceMoveCommand("G5");
-            } else if (data == "b") {
-                currentCommand = 'b';
-                commandStartTime = millis();
-                sendVoiceMoveCommand("B5");
-            } else if (data == "c") {
-                currentCommand = 'c';
-                commandStartTime = millis();
-                sendVoiceMoveCommand("TL");
-            } else if (data == "d") {
-                currentCommand = 'd';
-                commandStartTime = millis();
-                sendVoiceMoveCommand("TR");
-            }
-            // 如果语音控制关闭，忽略这些指令
+
+            requestPresetMotion(data.charAt(0));
         }
     }
 }
@@ -2782,13 +2890,17 @@ void loop() {
     // 超声波：起身安全检测时用完整超时；其余场景降频+短超时，减少无回波阻塞
     unsigned long nowMs = millis();
     bool needSafetyUs = needsStandupSafetyUltrasonic();
-    bool needVoiceUs = (voiceControlEnabled && currentCommand != 0 && ultrasonicDataReceiving);
+    bool needVoiceUs = ((voiceControlEnabled || presetMotionSafetyEnabled) &&
+                        (currentCommand != 0 || presetMotionPending != 0) &&
+                        ultrasonicDataReceiving);
     unsigned long usInterval = needSafetyUs ? 40UL : ULTRASONIC_IDLE_INTERVAL_MS;
     if (needSafetyUs || needVoiceUs || (nowMs - lastUltrasonicSampleMs >= usInterval)) {
         lastUltrasonicSampleMs = nowMs;
         unsigned long usTimeout = needSafetyUs ? ULTRASONIC_PULSE_TIMEOUT_US : ULTRASONIC_PULSE_TIMEOUT_FAST_US;
         distanceLeft = checkDistance(2, 4, usTimeout);
         distanceRight = checkDistance(12, 14, usTimeout);
+        rearLeftDistance = (int)distanceLeft;
+        rearRightDistance = (int)distanceRight;
     }
     updateStatusLed();
 
@@ -2808,10 +2920,13 @@ void loop() {
         }
     }
 
-    // 语音控制运行中持续检测超声波避障（先解析Serial2超声波，再判断）
-    if (voiceControlEnabled && currentCommand != 0 && ultrasonicDataReceiving) {
-        if (isVoiceDirectionBlocked(currentCommand)) {
-            stopVoiceCommandForObstacle();
+    processPresetMotionState();
+
+    // 运动中持续检测超声波避障（先解析Serial2超声波，再判断）
+    if ((voiceControlEnabled || presetMotionSafetyEnabled) &&
+        currentCommand != 0 && ultrasonicDataReceiving) {
+        if (isMotionDirectionBlocked(currentCommand)) {
+            finishPresetMotion(true);
         }
     }
 
@@ -2910,10 +3025,8 @@ void loop() {
     }
 
     // 处理串口命令持续时间
-    if (currentCommand != 0 && millis() - commandStartTime >= COMMAND_DURATION) {
-        // 3秒后发送停止指令
-        Serial2.println("S");
-        currentCommand = 0; // 重置命令状态
+    if (currentCommand != 0 && millis() - commandStartTime >= currentCommandDuration) {
+        finishPresetMotion(false);
     }
     
     // 处理人体跟踪命令超时
